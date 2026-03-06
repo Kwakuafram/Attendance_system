@@ -1,0 +1,425 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================
+    // Auth helpers
+    // =========================================================
+    function signedIn() { return request.auth != null; }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function hasRole(role) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().data.role == role;
+    }
+
+    function isAdmin() { return hasRole("ADMIN"); }
+    function isAccounts() { return hasRole("ACCOUNTS"); }
+    function isAdminOrAccounts() { return isAdmin() || isAccounts(); }
+
+
+    
+
+    // =========================================================
+    // Class helpers
+    // =========================================================
+    function isTeacherOfClass(classId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/classes/$(classId))
+        && get(/databases/$(database)/documents/classes/$(classId)).data.teacherUid == request.auth.uid;
+    }
+
+    function allowedItemKeysOnly() {
+      return request.resource.data.items.keys().hasOnly([
+        "bleach", "antiseptic", "detergent", "serum", "soap"
+      ]);
+    }
+
+    function onlyItemsChanged() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly(["items"]);
+    }
+
+    // =========================================================
+    // Student group helpers
+    // =========================================================
+    function studentPathExists(classId, studentId) {
+      return exists(/databases/$(database)/documents/classes/$(classId)/students/$(studentId));
+    }
+
+    function studentClassGroup(classId, studentId) {
+      return studentPathExists(classId, studentId)
+        ? get(/databases/$(database)/documents/classes/$(classId)/students/$(studentId)).data.classGroup
+        : null;
+    }
+
+    function studentIsPreschool(classId, studentId) {
+      return studentClassGroup(classId, studentId) == "PRESCHOOL";
+    }
+
+    function studentIsBasic(classId, studentId) {
+      return studentPathExists(classId, studentId)
+        && studentClassGroup(classId, studentId) != "PRESCHOOL";
+    }
+
+    // =========================================================
+    // Daily codes
+    // =========================================================
+    match /dailyCodes/{dateId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // =========================================================
+    // School config
+    // =========================================================
+    match /school/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // =========================================================
+    // Users
+    // =========================================================
+  match /users/{uid} {
+  allow get, list: if signedIn() && (request.auth.uid == uid || isAdminOrAccounts());
+
+  allow create: if signedIn()
+    && request.auth.uid == uid
+    && request.resource.data.role == "TEACHER"
+    && request.resource.data.baseMonthlySalary is number;
+
+  // ------------------------------------------
+  // Helper: teacher can only change these fields
+  // ------------------------------------------
+  function teacherAllowedUserUpdate() {
+    // Only allow teacher to update their own doc
+    return signedIn()
+      && request.auth.uid == uid
+      // Only these keys may be changed
+      && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        "bankName",
+        "bankAccountNumber",
+        "ssnitNumber",
+        "updatedAt"
+      ])
+      // Optional: enforce types (recommended)
+      && ( !("bankName" in request.resource.data) || request.resource.data.bankName is string )
+      && ( !("bankAccountNumber" in request.resource.data) || request.resource.data.bankAccountNumber is string )
+      && ( !("ssnitNumber" in request.resource.data) || request.resource.data.ssnitNumber is string );
+  }
+
+  // Admin can update anything; teacher can update only payroll fields
+  allow update: if isAdmin() || teacherAllowedUserUpdate();
+
+  allow delete: if false;
+}
+
+    // =========================================================
+    // Teacher check-in attendance
+    // =========================================================
+    match /attendance/{docId} {
+      allow read: if signedIn();
+
+      allow get: if isAdmin()
+        || (signedIn() && (resource == null || resource.data.teacherId == request.auth.uid));
+
+      allow create: if signedIn()
+        && request.resource.data.teacherId == request.auth.uid;
+
+      allow update: if isAdmin()
+        || (
+          signedIn()
+          && resource.data.teacherId == request.auth.uid
+          && request.resource.data.checkInApprovedAt == resource.data.checkInApprovedAt
+          && request.resource.data.checkInApprovedBy == resource.data.checkInApprovedBy
+          && request.resource.data.isLate == resource.data.isLate
+          && request.resource.data.latePenalty == resource.data.latePenalty
+        );
+
+      allow delete: if false;
+    }
+
+    match /payroll_adjustments/{docId} {
+  allow get, list: if signedIn() && (isAdminOrAccounts());
+
+  allow create, update: if isAdminOrAccounts();
+  allow delete: if isAdmin();
+}
+
+// =========================================================
+// Trial Test Entries (Admin-only)
+// =========================================================
+match /trial_test_entries/{paperId} {
+  allow read, write: if isAdmin();
+
+  match /rows/{studentId} {
+    allow read, write: if isAdmin();
+  }
+}
+
+// =========================================================
+// Trial Test Results (Admin-only)
+// =========================================================
+match /trial_test_positions/{docId} {
+  allow read, write: if isAdmin();
+}
+
+
+
+    // =========================================================
+    // Classes + Students + Reports
+    // =========================================================
+    match /classes/{classId} {
+      allow get, list: if isAdmin() || isAccounts()
+        || (signedIn() && resource.data.teacherUid == request.auth.uid);
+
+      allow create, update, delete: if isAdmin();
+
+      match /students/{studentId} {
+        allow get, list: if isAdminOrAccounts() || isTeacherOfClass(classId);
+
+        allow create, delete: if isAdmin();
+
+        // ✅ ACCOUNTS can update students (billingPlan, exemptions, etc.)
+        allow update: if isAdmin()
+          || isAccounts()
+          || (
+            isTeacherOfClass(classId)
+            && onlyItemsChanged()
+            && request.resource.data.items is map
+            && allowedItemKeysOnly()
+          );
+
+        match /reports/{reportId} {
+          allow get, list: if isAdminOrAccounts() || isTeacherOfClass(classId);
+
+          allow create, update: if isAdmin()
+            || (
+              isTeacherOfClass(classId)
+              && studentPathExists(classId, studentId)
+              && (
+                (studentIsPreschool(classId, studentId) && request.resource.data.reportType == "PRESCHOOL")
+                || (studentIsBasic(classId, studentId) && request.resource.data.reportType == "BASIC")
+              )
+            );
+
+          allow delete: if isAdmin();
+        }
+      }
+
+      match /term_stats/{termId} {
+        allow get, list: if isAdminOrAccounts();
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    // =========================================================
+    // Root-level students (if exists)
+    // =========================================================
+    match /students/{studentId} {
+      allow read: if isAdminOrAccounts();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // =========================================================
+    // Student attendance sessions
+    // =========================================================
+    match /attendance_sessions/{sessionId} {
+      allow get, list, create, update, delete: if isAdmin();
+
+      allow get: if signedIn() && resource.data.teacherUid == request.auth.uid;
+      allow list: if signedIn();
+
+      allow create: if signedIn() && request.resource.data.teacherUid == request.auth.uid;
+      allow update: if signedIn() && resource.data.teacherUid == request.auth.uid;
+      allow delete: if false;
+
+      match /absent/{studentId} {
+        allow get, list, create, update, delete: if isAdmin();
+
+        allow get, list: if signedIn()
+          && exists(/databases/$(database)/documents/attendance_sessions/$(sessionId))
+          && get(/databases/$(database)/documents/attendance_sessions/$(sessionId)).data.teacherUid == request.auth.uid;
+
+        allow create, update, delete: if signedIn()
+          && exists(/databases/$(database)/documents/attendance_sessions/$(sessionId))
+          && get(/databases/$(database)/documents/attendance_sessions/$(sessionId)).data.teacherUid == request.auth.uid;
+      }
+    }
+
+    // =========================================================
+    // Bursary payments
+    // =========================================================
+    match /bursary_payments/{paymentId} {
+      allow get, list, create: if isAdminOrAccounts();
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // =========================================================
+    // Bursary student lifetime totals (running totals)
+    // =========================================================
+    match /bursary_student_totals/{docId} {
+      allow get, list, create, update: if isAdminOrAccounts();
+      allow delete: if false;
+    }
+
+    // =========================================================
+    // Bursary accounts summary (Fees Due / Paid / Balance)
+    // =========================================================
+    match /bursary_accounts/{docId} {
+      allow get, list, create, update: if isAdminOrAccounts();
+      allow delete: if false;
+    }
+
+    // =========================================================
+    // Receipts + Counters
+    // =========================================================
+    match /fee_receipts/{receiptId} {
+      allow get, list, create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /counters/{counterId} {
+      allow read, write: if isAdmin();
+    }
+
+    // =========================================================
+    // Analytics / Stats
+    // =========================================================
+    match /stats_daily/{dateId} {
+      allow get, list: if isAdminOrAccounts();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /stats_terms/{termId} {
+      allow get, list: if isAdminOrAccounts();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // =========================================================
+    // Absence Reasons (teacher blocked / missed attendance)
+    // =========================================================
+    match /absence_reasons/{docId} {
+      // Admin can read all; teachers can read their own
+      allow get: if signedIn() && (
+        isAdmin() ||
+        resource.data.teacherId == request.auth.uid
+      );
+      allow list: if isAdmin() || (
+        signedIn() &&
+        request.auth.uid != null
+      );
+
+      // Teacher can create their own absence reason
+      allow create: if signedIn()
+        && request.resource.data.teacherId == request.auth.uid;
+
+      // No updates or deletes
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /{path=**}/students/{studentId} {
+  allow get, list: if isAdminOrAccounts();
+}
+
+    // =========================================================
+    // FCM Tokens
+    // =========================================================
+    match /fcm_tokens/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list: if isAdmin();
+      allow create, update: if signedIn() && request.auth.uid == uid;
+      allow delete: if signedIn() && (request.auth.uid == uid || isAdmin());
+    }
+
+    // =========================================================
+    // Notifications (in-app)
+    // =========================================================
+    match /notifications/{notifId} {
+      allow get: if signedIn() && (
+        isAdmin() ||
+        resource.data.recipientId == request.auth.uid ||
+        resource.data.recipientId == "ALL"
+      );
+      allow list: if signedIn();
+      allow create: if isAdmin();
+      allow update: if signedIn() && (
+        isAdmin() ||
+        resource.data.recipientId == request.auth.uid ||
+        resource.data.recipientId == "ALL"
+      );
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================
+    // Leave Requests
+    // =========================================================
+    match /leave_requests/{docId} {
+      allow get: if signedIn() && (
+        isAdmin() ||
+        resource.data.teacherId == request.auth.uid
+      );
+      allow list: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.teacherId == request.auth.uid;
+      allow update: if isAdmin() || (
+        signedIn() &&
+        resource.data.teacherId == request.auth.uid &&
+        resource.data.status == "PENDING"
+      );
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================
+    // Audit Log (admin read/write only)
+    // =========================================================
+    match /audit_log/{docId} {
+      allow get, list: if isAdmin();
+      allow create: if signedIn();
+      allow update, delete: if false;
+    }
+
+    // =========================================================
+    // SMS/WhatsApp Notification Queue
+    // =========================================================
+    match /sms_queue/{docId} {
+      allow get, list: if isAdmin();
+      allow create: if signedIn();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================
+    // Weekly Teacher Assessments (GES/NaCCA)
+    // =========================================================
+    match /teacher_assessments/{docId} {
+      // Admin can read all; teachers can read their own
+      allow get: if signedIn() && (
+        isAdmin() ||
+        resource.data.teacherId == request.auth.uid
+      );
+      allow list: if signedIn();
+
+      // Teachers can create their own self-assessment
+      allow create: if signedIn()
+        && request.resource.data.teacherId == request.auth.uid;
+
+      // Teachers can update their own if still DRAFT or SUBMITTED;
+      // Admin can update any (for review)
+      allow update: if isAdmin() || (
+        signedIn()
+        && resource.data.teacherId == request.auth.uid
+        && (resource.data.status == "DRAFT" || resource.data.status == "SUBMITTED")
+      );
+
+      allow delete: if isAdmin();
+    }
+
+  }
+}
