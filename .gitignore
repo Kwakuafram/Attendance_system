@@ -12,30 +12,39 @@ dist
 dist-ssr
 *.local
 
-# Additional build outputs
+# Build output
 build/
-
-# Env files
-.env
-.env.*
 
 # Vite cache
 .vite/
 
-# Firebase emulators
+# Firebase emulators and config
 .firebase/
+firebase.json
+firestore.indexes.json
+firestore.rules
 
 # Coverage reports
 coverage/
 
-# OS files
+# Environment files
+.env
+.env.*
+
+# OS generated files
 Thumbs.db
 Icon?
 Desktop.ini
 
-# Misc
+# Miscellaneous
 *.sublime-workspace
 *.sublime-project
+
+# Public build artifacts
+public/manifest.json
+public/sw.js
+public/icons/
+public/splash/
 
 # Editor directories and files
 .vscode/*
