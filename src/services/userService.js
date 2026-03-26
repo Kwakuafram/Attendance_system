@@ -14,6 +14,7 @@ export async function ensureUserProfile({ uid, email, fullName, address, contact
     contact: contact ?? "",
 
     role: "TEACHER",
+    roles: ["TEACHER"],
     baseMonthlySalary: 0, // required by rules; admin will update later
 
     createdAt: serverTimestamp(),

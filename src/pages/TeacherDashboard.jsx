@@ -3,6 +3,22 @@ import toast from "react-hot-toast";
 import { auth, db } from "../firebase";
 import { doc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { onAuthStateChanged, signOut } from "firebase/auth";
+import {
+  EXAM_STATUSES,
+  EXAM_TYPES,
+  LEVEL_GROUPS,
+  INPUT_MODES,
+  getSubjectsForLevel,
+  buildBlankExamSections,
+  createExam,
+  updateExamSections,
+  submitExam,
+  getTeacherExams,
+  deleteExam,
+  uploadExamFile,
+  deleteExamWithFile,
+} from "../services/examService";
+import { SectionBuilder, ExamPreview } from "../components/ExamBuilders";
 
 import { ITEM_KEYS, setStudentItemReceived } from "../services/studentItemsService";
 import {
@@ -60,8 +76,9 @@ import {
   markNotificationRead,
   markAllRead,
 } from "../services/notificationService";
+import RoleSwitcher from "../components/RoleSwitcher";
 
-export default function TeacherDashboard() {
+export default function TeacherDashboard({ roles, activeRole, switchRole }) {
   const { t } = useLanguage();
   const [user, setUser] = useState(null);
   const [today, setToday] = useState(null);
@@ -150,6 +167,206 @@ const [bankMsg, setBankMsg] = useState("");
   const [leaveReason, setLeaveReason] = useState("");
   const [leaveBusy, setLeaveBusy] = useState(false);
   const [leaveRequests, setLeaveRequests] = useState([]);
+
+  // ...existing code...
+
+  function isPreschoolClassName(name = "") {
+    const n = String(name).toLowerCase();
+    return (
+      n.includes("creche") ||
+      n.includes("crèche") ||
+      n.includes("nursery") ||
+      n.includes("kg") ||
+      n.includes("k.g")
+    );
+  }
+
+  const isPreschool = useMemo(() => {
+    if (teacherClass?.classGroup) return teacherClass.classGroup === "PRESCHOOL";
+    return isPreschoolClassName(teacherClass?.name);
+  }, [teacherClass]);
+
+  // ============================
+  // Exam Management
+  // ============================
+  const [examView, setExamView] = useState("list"); // list | create | preview
+  const [examInputMode, setExamInputMode] = useState(""); // upload | typed
+  const [examSubject, setExamSubject] = useState("");
+  const [examTerm, setExamTerm] = useState("");
+  const [examYear, setExamYear] = useState("2026");
+  const [examType, setExamType] = useState("");
+  const [examSections, setExamSections] = useState([]);
+  const [examFile, setExamFile] = useState(null);
+  const [examBusy, setExamBusy] = useState(false);
+  const [myExams, setMyExams] = useState([]);
+  const [previewExam, setPreviewExam] = useState(null);
+  const [editingExamId, setEditingExamId] = useState(null);
+
+  const examLevelGroup = useMemo(() => {
+    return isPreschool ? LEVEL_GROUPS.PRESCHOOL : LEVEL_GROUPS.BASIC;
+  }, [isPreschool]);
+
+  const examSubjectsList = useMemo(() => {
+    return getSubjectsForLevel(examLevelGroup);
+  }, [examLevelGroup]);
+
+  // Load teacher's exams
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      try {
+        const exams = await getTeacherExams(user.uid);
+        setMyExams(exams);
+      } catch (err) {
+        console.error("Failed to load exams:", err);
+      }
+    })();
+  }, [user, examView]);
+
+  function resetExamForm() {
+    setExamInputMode("");
+    setExamSubject("");
+    setExamTerm("");
+    setExamYear("2026");
+    setExamType("");
+    setExamSections([]);
+    setExamFile(null);
+    setEditingExamId(null);
+    setExamView("list");
+  }
+
+  function startCreateExam(mode) {
+    setExamInputMode(mode);
+    setExamSubject("");
+    setExamTerm("");
+    setExamYear("2026");
+    setExamType("");
+    setExamFile(null);
+    setEditingExamId(null);
+    if (mode === INPUT_MODES.TYPED) {
+      setExamSections(buildBlankExamSections(examLevelGroup));
+    } else {
+      setExamSections([]);
+    }
+    setExamView("create");
+  }
+
+  function handleSectionChange(idx, updatedSection) {
+    setExamSections((prev) =>
+      prev.map((s, i) => (i === idx ? updatedSection : s))
+    );
+  }
+
+  async function handleSaveExamDraft() {
+    if (!examSubject || !examTerm || !examType) {
+      toast.error("Please fill in subject, term, and exam type.");
+      return;
+    }
+    setExamBusy(true);
+    try {
+      if (editingExamId) {
+        await updateExamSections(editingExamId, examSections);
+        toast.success("Draft updated.");
+      } else {
+        const id = await createExam({
+          teacherId: user.uid,
+          teacherName: profile?.fullName || user.displayName || "",
+          classId: teacherClass?.id || "",
+          className: teacherClass?.name || "",
+          levelGroup: examLevelGroup,
+          subject: examSubject,
+          term: examTerm,
+          academicYear: examYear,
+          examType,
+          inputMode: INPUT_MODES.TYPED,
+          sections: examSections,
+        });
+        setEditingExamId(id);
+        toast.success("Draft saved.");
+      }
+    } catch (err) {
+      toast.error(err.message || "Failed to save draft.");
+    } finally {
+      setExamBusy(false);
+    }
+  }
+
+  async function handleSubmitExam() {
+    if (examInputMode === INPUT_MODES.UPLOAD) {
+      if (!examSubject || !examTerm || !examType || !examFile) {
+        toast.error("Please fill all fields and choose a file.");
+        return;
+      }
+      setExamBusy(true);
+      try {
+        await uploadExamFile({
+          teacherId: user.uid,
+          teacherName: profile?.fullName || user.displayName || "",
+          classId: teacherClass?.id || "",
+          className: teacherClass?.name || "",
+          levelGroup: examLevelGroup,
+          subject: examSubject,
+          term: examTerm,
+          academicYear: examYear,
+          examType,
+          file: examFile,
+        });
+        toast.success("Exam uploaded and submitted!");
+        resetExamForm();
+      } catch (err) {
+        toast.error(err.message || "Upload failed.");
+      } finally {
+        setExamBusy(false);
+      }
+    } else {
+      if (!editingExamId) {
+        await handleSaveExamDraft();
+      }
+      if (!editingExamId && !examSubject) return;
+      setExamBusy(true);
+      try {
+        if (editingExamId) {
+          await updateExamSections(editingExamId, examSections);
+          await submitExam(editingExamId);
+        }
+        toast.success("Exam submitted for review!");
+        resetExamForm();
+      } catch (err) {
+        toast.error(err.message || "Submit failed.");
+      } finally {
+        setExamBusy(false);
+      }
+    }
+  }
+
+  async function handleDeleteExam(exam) {
+    if (!confirm("Delete this exam? This cannot be undone.")) return;
+    setExamBusy(true);
+    try {
+      if (exam.storagePath) {
+        await deleteExamWithFile(exam.id, exam.storagePath);
+      } else {
+        await deleteExam(exam.id);
+      }
+      setMyExams((prev) => prev.filter((e) => e.id !== exam.id));
+      toast.success("Exam deleted.");
+    } catch (err) {
+      toast.error(err.message || "Delete failed.");
+    } finally {
+      setExamBusy(false);
+    }
+  }
+
+  function handleEditExam(exam) {
+    setEditingExamId(exam.id);
+    setExamInputMode(exam.inputMode || INPUT_MODES.TYPED);
+    setExamSubject(exam.subject || "");
+    setExamTerm(exam.term || "");
+    setExamYear(exam.academicYear || "2026");
+    setExamType(exam.examType || "");
+    setExamSections(exam.sections || buildBlankExamSections(examLevelGroup));
+    setExamView("create");
+  }
 
   // ============================
   // Self-Assessment (GES/NaCCA)
@@ -305,17 +522,6 @@ function fmtTime(ts) {
 
   function getStudentItemReceived(student, itemKey) {
     return student?.items?.[itemKey]?.received === true;
-  }
-
-  function isPreschoolClassName(name = "") {
-    const n = String(name).toLowerCase();
-    return (
-      n.includes("creche") ||
-      n.includes("crèche") ||
-      n.includes("nursery") ||
-      n.includes("kg") ||
-      n.includes("k.g")
-    );
   }
 
   const getStudentItemsProgress = useCallback(
@@ -662,7 +868,7 @@ const checkoutDisabledReason = useMemo(() => {
   if (!showCheckoutSection) return "";
   if (!after3pm) return "Checkout opens after 3:00pm GMT.";
   if (!canRequestCheckout) {
-    if (status === "PENDING_OUT") return "Checkout already requested. Waiting for admin approval…";
+    if (status === "PENDING_OUT") return "Checkout approved.";
     if (status === "OUT_APPROVED") return "Checkout approved.";
     return "Checkout not available.";
   }
@@ -680,7 +886,7 @@ async function handleRequestCheckout() {
 
     await requestCheckOut(user.uid);
     await refresh();
-    setMsg("Checkout request submitted. Waiting for admin approval.");
+    setMsg("Checkout approved. Have a good day!");
   } catch (e) {
     setMsg(e?.message || "Checkout request failed.");
   } finally {
@@ -698,7 +904,7 @@ async function handleRequestCheckout() {
       await requestCheckIn(user.uid, code);
       setCode("");
       await refresh();
-      setMsg("Check-in request submitted. Waiting for admin approval.");
+      setMsg("Check-in approved successfully!");
     } catch (e) {
       setMsg(e?.message || "Request failed.");
     } finally {
@@ -746,11 +952,6 @@ async function handleRequestCheckout() {
       setAbsenceBusy(false);
     }
   }
-
-  const isPreschool = useMemo(() => {
-    if (teacherClass?.classGroup) return teacherClass.classGroup === "PRESCHOOL";
-    return isPreschoolClassName(teacherClass?.name);
-  }, [teacherClass]);
 
   const showRejected = status === "REJECTED";
   const rejectionReason = today?.rejectionReason || "";
@@ -930,6 +1131,7 @@ async function handleRequestCheckout() {
               </p>
             </div>
             <div className="flex items-center gap-3">
+              <RoleSwitcher roles={roles} activeRole={activeRole} onSwitch={switchRole} />
               {/* 🌐 Language Switcher */}
               <LanguageSwitcher />
               {/* 🔔 Notification Bell */}
@@ -1072,6 +1274,7 @@ async function handleRequestCheckout() {
             { id: "leave",      label: "Leave",        icon: "🏖️", bg: "bg-orange-500",   ring: "ring-orange-300" },
             { id: "assessment", label: "Assessment",   icon: "📋", bg: "bg-violet-500",   ring: "ring-violet-300" },
             { id: "reports",    label: "Reports",      icon: "📝", bg: "bg-rose-500",     ring: "ring-rose-300" },
+            { id: "examQuestions", label: "Exam Questions", icon: "📚", bg: "bg-fuchsia-500", ring: "ring-fuchsia-300" }
           ].map((tab) => (
             <button
               key={tab.id}
@@ -1189,7 +1392,7 @@ async function handleRequestCheckout() {
           {status === "IN_APPROVED"
             ? "You can request checkout today (enabled after 3:00pm GMT)."
             : status === "PENDING_OUT"
-            ? "Checkout requested. Waiting for admin approval…"
+            ? "Checkout approved."
             : status === "OUT_APPROVED"
             ? "Checkout approved. Have a good day."
             : status === "REJECTED_OUT"
@@ -2465,6 +2668,225 @@ async function handleRequestCheckout() {
   <BasicReport teacherClass={teacherClass} students={students} profile={profile} />
 )}
         </div>
+
+        {/* ═══ TAB: Exam Questions ═══ */}
+        <div className={activeTab !== "examQuestions" ? "hidden" : ""}>
+          <div className="space-y-6">
+
+            {/* ── Exam List View ── */}
+            {examView === "list" && (
+              <>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-900">📚 My Exam Papers</h2>
+                    <p className="text-sm text-slate-500">Create, upload, and manage your exam papers. Admin will review and approve.</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => startCreateExam(INPUT_MODES.TYPED)} className="rounded-xl bg-fuchsia-600 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-fuchsia-700 transition">
+                      ✏️ Type Questions
+                    </button>
+                    <button onClick={() => startCreateExam(INPUT_MODES.UPLOAD)} className="rounded-xl border border-fuchsia-300 bg-white px-4 py-2.5 text-sm font-semibold text-fuchsia-700 shadow-sm hover:bg-fuchsia-50 transition">
+                      📎 Upload File
+                    </button>
+                  </div>
+                </div>
+
+                {myExams.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
+                    <p className="text-3xl">📝</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-700">No exams yet</p>
+                    <p className="text-xs text-slate-500">Create your first exam paper using the buttons above.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {myExams.map((exam) => {
+                      const statusColors = {
+                        DRAFT: "bg-slate-100 text-slate-700 border-slate-200",
+                        SUBMITTED: "bg-amber-50 text-amber-700 border-amber-200",
+                        UNDER_REVIEW: "bg-sky-50 text-sky-700 border-sky-200",
+                        APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
+                        REJECTED: "bg-red-50 text-red-700 border-red-200",
+                        NEEDS_CORRECTION: "bg-orange-50 text-orange-700 border-orange-200",
+                      };
+                      return (
+                        <div key={exam.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm hover:shadow-md transition">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <h3 className="text-sm font-bold text-slate-900">{exam.subject}</h3>
+                              <p className="text-xs text-slate-500">{exam.className} · {exam.examType} · {exam.term} ({exam.academicYear})</p>
+                            </div>
+                            <span className={`rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${statusColors[exam.status] || statusColors.DRAFT}`}>
+                              {exam.status?.replace(/_/g, " ")}
+                            </span>
+                          </div>
+                          <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+                            <span>{exam.inputMode === "upload" ? "📎 File upload" : "✏️ Typed"}</span>
+                            <span>·</span>
+                            <span>{exam.levelGroup === "PRESCHOOL" ? "Preschool" : "Basic School"}</span>
+                            {exam.createdAt?.toDate && (
+                              <><span>·</span><span>{exam.createdAt.toDate().toLocaleDateString()}</span></>
+                            )}
+                          </div>
+                          {exam.adminComment && (
+                            <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+                              <span className="font-semibold">Admin:</span> {exam.adminComment}
+                            </div>
+                          )}
+                          <div className="mt-3 flex gap-2">
+                            <button onClick={() => { setPreviewExam(exam); setExamView("preview"); }} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">👁️ Preview</button>
+                            {(exam.status === "DRAFT" || exam.status === "NEEDS_CORRECTION") && exam.inputMode === "typed" && (
+                              <button onClick={() => handleEditExam(exam)} className="rounded-lg border border-fuchsia-200 bg-fuchsia-50 px-3 py-1.5 text-xs font-semibold text-fuchsia-700 hover:bg-fuchsia-100">✏️ Edit</button>
+                            )}
+                            {(exam.status === "DRAFT" || exam.status === "NEEDS_CORRECTION") && (
+                              <button disabled={examBusy} onClick={() => handleDeleteExam(exam)} className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 disabled:opacity-50">🗑️ Delete</button>
+                            )}
+                            {exam.fileUrl && (
+                              <a href={exam.fileUrl} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-100">⬇️ Download</a>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ── Exam Preview View ── */}
+            {examView === "preview" && previewExam && (
+              <>
+                <button onClick={() => { setExamView("list"); setPreviewExam(null); }} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 mb-4">
+                  ← Back to list
+                </button>
+                <ExamPreview exam={previewExam} />
+              </>
+            )}
+
+            {/* ── Create / Edit Exam View ── */}
+            {examView === "create" && (
+              <>
+                <button onClick={resetExamForm} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 mb-4">
+                  ← Back to list
+                </button>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                  <h2 className="text-lg font-bold text-slate-900 mb-1">
+                    {editingExamId ? "✏️ Edit Exam" : examInputMode === INPUT_MODES.UPLOAD ? "📎 Upload Exam Paper" : "✏️ Create Exam Paper"}
+                  </h2>
+                  <p className="text-sm text-slate-500 mb-6">
+                    {examLevelGroup === LEVEL_GROUPS.PRESCHOOL ? "Preschool" : "Basic School"} · {teacherClass?.name || "—"}
+                  </p>
+
+                  {/* Metadata fields */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                    <div>
+                      <label className="text-sm font-medium text-slate-700">Subject</label>
+                      <select
+                        value={examSubject}
+                        onChange={(e) => setExamSubject(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-fuchsia-400"
+                      >
+                        <option value="">Select subject</option>
+                        {examSubjectsList.map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-slate-700">Exam Type</label>
+                      <select
+                        value={examType}
+                        onChange={(e) => setExamType(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-fuchsia-400"
+                      >
+                        <option value="">Select type</option>
+                        {EXAM_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-slate-700">Term</label>
+                      <select
+                        value={examTerm}
+                        onChange={(e) => setExamTerm(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-fuchsia-400"
+                      >
+                        <option value="">Select term</option>
+                        <option value="1">Term 1</option>
+                        <option value="2">Term 2</option>
+                        <option value="3">Term 3</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-slate-700">Academic Year</label>
+                      <input
+                        value={examYear}
+                        onChange={(e) => setExamYear(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-fuchsia-400"
+                        placeholder="e.g. 2026"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Upload mode */}
+                  {examInputMode === INPUT_MODES.UPLOAD && (
+                    <div className="mb-6">
+                      <label className="text-sm font-medium text-slate-700">Upload Exam File (PDF, DOC, DOCX)</label>
+                      <input
+                        type="file"
+                        accept=".pdf,.doc,.docx"
+                        onChange={(e) => setExamFile(e.target.files?.[0] || null)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-fuchsia-50 file:px-3 file:py-1 file:text-sm file:font-semibold file:text-fuchsia-700"
+                      />
+                      {examFile && (
+                        <p className="mt-1 text-xs text-slate-500">📎 {examFile.name} ({(examFile.size / 1024).toFixed(1)} KB)</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Typed mode – Section builders */}
+                  {examInputMode === INPUT_MODES.TYPED && (
+                    <div className="space-y-4 mb-6">
+                      <h3 className="text-sm font-bold text-slate-900">Exam Sections</h3>
+                      {examSections.map((sec, idx) => (
+                        <SectionBuilder
+                          key={idx}
+                          section={sec}
+                          onChange={(updated) => handleSectionChange(idx, updated)}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Action buttons */}
+                  <div className="flex flex-wrap gap-3">
+                    {examInputMode === INPUT_MODES.TYPED && (
+                      <button
+                        disabled={examBusy}
+                        onClick={handleSaveExamDraft}
+                        className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition"
+                      >
+                        {examBusy ? "Saving..." : "💾 Save Draft"}
+                      </button>
+                    )}
+                    <button
+                      disabled={examBusy}
+                      onClick={handleSubmitExam}
+                      className="rounded-xl bg-fuchsia-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-fuchsia-700 disabled:opacity-50 transition"
+                    >
+                      {examBusy ? "Submitting..." : "🚀 Submit for Review"}
+                    </button>
+                    <button
+                      onClick={resetExamForm}
+                      className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-500 hover:bg-slate-50 transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
+          </div>
+        </div>
+
       </div>
     </div>
   );

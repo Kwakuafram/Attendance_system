@@ -28,7 +28,10 @@ import {
 } from "../services/adminAnalyticsService";
 
 import { ensureSchoolConfig, getSchoolConfig } from "../services/schoolService";
-import { generateDailyCodesForStaff, getTodayDailyCodes } from "../services/dailyCodeService";
+import {
+  generateDailyCodesForStaff,
+  getTodayDailyCodes,
+} from "../services/dailyCodeService";
 import {
   adminApproveCheckIn,
   adminRejectCheckIn,
@@ -79,22 +82,102 @@ import {
 } from "../services/notificationService";
 import {
   getPendingLeaveRequests,
+  getAllLeaveRequests,
   approveLeaveRequest,
   rejectLeaveRequest,
 } from "../services/leaveRequestService";
-import { logAudit, getRecentAuditLog, AUDIT_ACTIONS } from "../services/auditService";
+import {
+  logAudit,
+  getRecentAuditLog,
+  AUDIT_ACTIONS,
+} from "../services/auditService";
+import { getAllUsers, updateUserRoles } from "../services/adminService";
 import TeacherWeeklyAssessment from "../pages/TeacherWeeklyAssessment";
 import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  Legend, ResponsiveContainer,
+  EXAM_STATUSES,
+  getAllExams,
+  approveExam,
+  rejectExam,
+  requestCorrection,
+} from "../services/examService";
+import { ExamPreview } from "../components/ExamBuilders";
+import RoleSwitcher from "../components/RoleSwitcher";
+import {
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
 } from "recharts";
 
-export default function AdminDashboard({ profile }) {
+export default function AdminDashboard({ profile, roles, activeRole, switchRole }) {
+  console.log("DEBUG AdminDashboard mounted");
   const user = auth.currentUser;
   const { t } = useLanguage();
 
   const [busy, setBusy] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
+
+  // ============================
+  // User Roles Management
+  // ============================
+  const [allUsers, setAllUsers] = useState([]);
+  const [rolesLoading, setRolesLoading] = useState(false);
+  const [rolesSearch, setRolesSearch] = useState("");
+
+  // ============================
+  // Exam Review
+  // ============================
+  const [adminExams, setAdminExams] = useState([]);
+  const [adminExamFilter, setAdminExamFilter] = useState("ALL");
+  const [adminExamPreview, setAdminExamPreview] = useState(null);
+  const [adminExamComment, setAdminExamComment] = useState("");
+  const [examReviewBusy, setExamReviewBusy] = useState(false);
+
+  useEffect(() => {
+    if (activeTab !== "exams") return;
+    (async () => {
+      try {
+        const exams = await getAllExams();
+        setAdminExams(exams);
+      } catch (err) {
+        console.error("Failed to load exams:", err);
+      }
+    })();
+  }, [activeTab]);
+
+  const filteredAdminExams = useMemo(() => {
+    if (adminExamFilter === "ALL") return adminExams;
+    return adminExams.filter((e) => e.status === adminExamFilter);
+  }, [adminExams, adminExamFilter]);
+
+  async function handleExamAction(examId, action) {
+    setExamReviewBusy(true);
+    try {
+      if (action === "approve") await approveExam(examId, adminExamComment);
+      else if (action === "reject") await rejectExam(examId, adminExamComment);
+      else if (action === "correction") await requestCorrection(examId, adminExamComment);
+      setAdminExams((prev) =>
+        prev.map((e) =>
+          e.id === examId
+            ? { ...e, status: action === "approve" ? EXAM_STATUSES.APPROVED : action === "reject" ? EXAM_STATUSES.REJECTED : EXAM_STATUSES.NEEDS_CORRECTION, adminComment: adminExamComment }
+            : e
+        )
+      );
+      setAdminExamComment("");
+      setAdminExamPreview(null);
+      toast.success(action === "approve" ? "Exam approved!" : action === "reject" ? "Exam rejected." : "Correction requested.");
+    } catch (err) {
+      toast.error(err.message || "Failed to update exam.");
+    } finally {
+      setExamReviewBusy(false);
+    }
+  }
 
   // Holiday Banner or Daily Motivational Quote
   const todayStr = accraYyyyMmDd();
@@ -134,20 +217,20 @@ export default function AdminDashboard({ profile }) {
   const [rejecting, setRejecting] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
   const [pendingOut, setPendingOut] = useState([]);
-const [rejectingOut, setRejectingOut] = useState(null);
-const [rejectReasonOut, setRejectReasonOut] = useState("");
+  const [rejectingOut, setRejectingOut] = useState(null);
+  const [rejectReasonOut, setRejectReasonOut] = useState("");
 
-// ============================
-// Payroll (Admin)
-// ============================
-const [payrollMonth, setPayrollMonth] = useState(""); // e.g. 2026-01
-const [payrollTeacherId, setPayrollTeacherId] = useState("");
-const [payrollBusy, setPayrollBusy] = useState(false);
-const [payrollSummary, setPayrollSummary] = useState(null);
+  // ============================
+  // Payroll (Admin)
+  // ============================
+  const [payrollMonth, setPayrollMonth] = useState(""); // e.g. 2026-01
+  const [payrollTeacherId, setPayrollTeacherId] = useState("");
+  const [payrollBusy, setPayrollBusy] = useState(false);
+  const [payrollSummary, setPayrollSummary] = useState(null);
 
-const [deductionLabel, setDeductionLabel] = useState("");
-const [deductionAmount, setDeductionAmount] = useState("");
-const [payrollOtherDeductions, setPayrollOtherDeductions] = useState([]); // [{id,label,amount}]
+  const [deductionLabel, setDeductionLabel] = useState("");
+  const [deductionAmount, setDeductionAmount] = useState("");
+  const [payrollOtherDeductions, setPayrollOtherDeductions] = useState([]); // [{id,label,amount}]
 
   // Teachers
   const [teachers, setTeachers] = useState([]);
@@ -222,10 +305,10 @@ const [payrollOtherDeductions, setPayrollOtherDeductions] = useState([]); // [{i
   // ============================
   // Leave Requests (Admin)
   // ============================
-  const [pendingLeaves, setPendingLeaves] = useState([]);
-  const [leaveRejectReason, setLeaveRejectReason] = useState("");
-  const [leaveRejectingId, setLeaveRejectingId] = useState(null);
-  const [leaveBusy, setLeaveBusy] = useState(false);
+ const [pendingLeaves, setPendingLeaves] = useState([]);
+const [leaveRejectReason, setLeaveRejectReason] = useState("");
+const [leaveRejectingId, setLeaveRejectingId] = useState(null);
+const [leaveBusyId, setLeaveBusyId] = useState(null);
 
   // ============================
   // Notifications
@@ -250,7 +333,7 @@ const [payrollOtherDeductions, setPayrollOtherDeductions] = useState([]); // [{i
   const [reportStudents, setReportStudents] = useState([]);
   const [reportStudentId, setReportStudentId] = useState("");
   const [reportYear, setReportYear] = useState(
-    String(new Date().getFullYear())
+    String(new Date().getFullYear()),
   );
   const [reportTerm, setReportTerm] = useState("1");
   const [reportBusy, setReportBusy] = useState(false);
@@ -326,6 +409,7 @@ const [payrollOtherDeductions, setPayrollOtherDeductions] = useState([]); // [{i
       name: e?.name,
       stack: e?.stack,
     });
+    toast.error(e?.message || "Failed to load pending leave requests.");
   }
 
   // ---------- helpers ----------
@@ -416,12 +500,11 @@ const [payrollOtherDeductions, setPayrollOtherDeductions] = useState([]); // [{i
   }, []);
 
   useEffect(() => {
-  // Default to current monthKey like "YYYY-MM"
-  const d = new Date();
-  const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  setPayrollMonth(month);
-}, []);
-
+    // Default to current monthKey like "YYYY-MM"
+    const d = new Date();
+    const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    setPayrollMonth(month);
+  }, []);
 
   useEffect(() => {
     const original = toast.error;
@@ -443,36 +526,40 @@ const [payrollOtherDeductions, setPayrollOtherDeductions] = useState([]); // [{i
   }, []);
 
   function money(n) {
-  const x = Number(n ?? 0);
-  if (!Number.isFinite(x)) return "0.00";
-  return x.toFixed(2);
-}
-
-async function printAllPayrollPdf() {
-  toast.dismiss();
-  setPayrollBusy(true);
-  try {
-    if (!payrollMonth) throw new Error("Select a payroll month (YYYY-MM).");
-    if (!teachers.length) throw new Error("No teachers found.");
-
-    const summaries = await getPayrollSummariesForTeachers(teachers, payrollMonth, 6);
-
-    if (!summaries.length) throw new Error("No payroll data found.");
-
-    printPayrollPdf({
-      summaries,
-      schoolName: "GREENIDGE INTERNATIONAL SCH.",
-    });
-
-    toast.success("Opening print dialog…");
-  } catch (e) {
-    toast.error(e?.message || "Failed to print payroll.");
-  } finally {
-    setPayrollBusy(false);
+    const x = Number(n ?? 0);
+    if (!Number.isFinite(x)) return "0.00";
+    return x.toFixed(2);
   }
-}
 
- // ============================
+  async function printAllPayrollPdf() {
+    toast.dismiss();
+    setPayrollBusy(true);
+    try {
+      if (!payrollMonth) throw new Error("Select a payroll month (YYYY-MM).");
+      if (!teachers.length) throw new Error("No teachers found.");
+
+      const summaries = await getPayrollSummariesForTeachers(
+        teachers,
+        payrollMonth,
+        6,
+      );
+
+      if (!summaries.length) throw new Error("No payroll data found.");
+
+      printPayrollPdf({
+        summaries,
+        schoolName: "GREENIDGE INTERNATIONAL SCH.",
+      });
+
+      toast.success("Opening print dialog…");
+    } catch (e) {
+      toast.error(e?.message || "Failed to print payroll.");
+    } finally {
+      setPayrollBusy(false);
+    }
+  }
+
+  // ============================
   // Payroll: Print Register (ALL teachers)  ✅ FIXED (no undefined summaries)
   // ============================
   async function printTeachersPayrollRegister() {
@@ -482,7 +569,9 @@ async function printAllPayrollPdf() {
     // open window first to avoid popup blocking
     const w = window.open("", "_blank", "width=1200,height=800");
     if (!w) {
-      toast.error("Popup blocked. Please allow popups for this site, then try again.");
+      toast.error(
+        "Popup blocked. Please allow popups for this site, then try again.",
+      );
       setPayrollBusy(false);
       return;
     }
@@ -505,46 +594,52 @@ async function printAllPayrollPdf() {
       if (!teachers.length) throw new Error("No teachers found.");
 
       // ✅ summaries is defined here (fixes your ReferenceError)
- // 1) Fetch summaries
-const summariesRaw = await getPayrollSummariesForTeachers(teachers, payrollMonth, 6);
-if (!summariesRaw.length) throw new Error("No payroll data found.");
+      // 1) Fetch summaries
+      const summariesRaw = await getPayrollSummariesForTeachers(
+        teachers,
+        payrollMonth,
+        6,
+      );
+      if (!summariesRaw.length) throw new Error("No payroll data found.");
 
-// 2) Attach user/teacher docs (from your users collection) to each summary
-const teacherById = new Map(teachers.map((t) => [t.id, t]));
+      // 2) Attach user/teacher docs (from your users collection) to each summary
+      const teacherById = new Map(teachers.map((t) => [t.id, t]));
 
-// If your payroll summaries use teacherId, this will work.
-// If they use another key, add it below.
-const summaries = summariesRaw.map((s) => {
-  const teacher =
-    teacherById.get(s.teacherId) ||
-    teacherById.get(s.teacherUid) ||
-    teacherById.get(s.userId) ||
-    teacherById.get(s.uid) ||
-    null;
+      // If your payroll summaries use teacherId, this will work.
+      // If they use another key, add it below.
+      const summaries = summariesRaw.map((s) => {
+        const teacher =
+          teacherById.get(s.teacherId) ||
+          teacherById.get(s.teacherUid) ||
+          teacherById.get(s.userId) ||
+          teacherById.get(s.uid) ||
+          null;
 
-  return { ...s, teacher };
-});
+        return { ...s, teacher };
+      });
 
-const monthName = new Date(`${payrollMonth}-01`).toLocaleString(undefined, {
-  month: "long",
-  year: "numeric",
-});
+      const monthName = new Date(`${payrollMonth}-01`).toLocaleString(
+        undefined,
+        {
+          month: "long",
+          year: "numeric",
+        },
+      );
 
-const preparedBy = profile?.fullName || user?.email || "";
-const preparedAt = new Date().toLocaleString();
+      const preparedBy = profile?.fullName || user?.email || "";
+      const preparedAt = new Date().toLocaleString();
 
-// 3) Print
-printTeacherPayrollRegisterPdf({
-  summaries,
-  schoolName: "GREENIDGE INTERNATIONAL SCH.",
-  monthKey: payrollMonth,
-  monthName,
-  currency: school?.currency || "GHS",
-  preparedBy,
-  preparedAt,
-  targetWindow: w,
-});
-
+      // 3) Print
+      printTeacherPayrollRegisterPdf({
+        summaries,
+        schoolName: "GREENIDGE INTERNATIONAL SCH.",
+        monthKey: payrollMonth,
+        monthName,
+        currency: school?.currency || "GHS",
+        preparedBy,
+        preparedAt,
+        targetWindow: w,
+      });
 
       toast.success("Opening print dialog…");
     } catch (e) {
@@ -561,94 +656,91 @@ printTeacherPayrollRegisterPdf({
           </html>
         `);
         w.document.close();
-      } catch { /* print window blocked */ }
+      } catch {
+        /* print window blocked */
+      }
     } finally {
       setPayrollBusy(false);
     }
   }
 
+  async function loadPayroll() {
+    toast.dismiss();
+    setPayrollBusy(true);
+    setPayrollSummary(null);
 
-async function loadPayroll() {
-  toast.dismiss();
-  setPayrollBusy(true);
-  setPayrollSummary(null);
+    try {
+      if (!payrollMonth) throw new Error("Select a payroll month (YYYY-MM).");
+      if (!payrollTeacherId) throw new Error("Select a teacher.");
 
-  try {
-    if (!payrollMonth) throw new Error("Select a payroll month (YYYY-MM).");
-    if (!payrollTeacherId) throw new Error("Select a teacher.");
+      const res = await getPayrollSummary(payrollTeacherId, payrollMonth);
+      setPayrollSummary(res);
 
-    const res = await getPayrollSummary(payrollTeacherId, payrollMonth);
-    setPayrollSummary(res);
+      // Use loaded other deductions as editable state
+      setPayrollOtherDeductions(res.otherDeductions || []);
 
-    // Use loaded other deductions as editable state
-    setPayrollOtherDeductions(res.otherDeductions || []);
-
-    toast.success("Payroll loaded.");
-  } catch (e) {
-    toast.error(e?.message || "Failed to load payroll.");
-  } finally {
-    setPayrollBusy(false);
-  }
-}
-
-function addOtherDeduction() {
-  toast.dismiss();
-
-  const label = String(deductionLabel || "").trim();
-  const amt = Number(deductionAmount);
-
-  if (!label) {
-    toast.error("Enter deduction label.");
-    return;
-  }
-  if (!Number.isFinite(amt) || amt <= 0) {
-    toast.error("Enter a valid deduction amount.");
-    return;
+      toast.success("Payroll loaded.");
+    } catch (e) {
+      toast.error(e?.message || "Failed to load payroll.");
+    } finally {
+      setPayrollBusy(false);
+    }
   }
 
-  const id = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  function addOtherDeduction() {
+    toast.dismiss();
 
-  setPayrollOtherDeductions((prev) => [
-    ...prev,
-    { id, label, amount: amt },
-  ]);
+    const label = String(deductionLabel || "").trim();
+    const amt = Number(deductionAmount);
 
-  setDeductionLabel("");
-  setDeductionAmount("");
-}
+    if (!label) {
+      toast.error("Enter deduction label.");
+      return;
+    }
+    if (!Number.isFinite(amt) || amt <= 0) {
+      toast.error("Enter a valid deduction amount.");
+      return;
+    }
 
-function removeOtherDeduction(id) {
-  setPayrollOtherDeductions((prev) => prev.filter((x) => x.id !== id));
-}
+    const id = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
-async function savePayrollDeductions() {
-  toast.dismiss();
-  setPayrollBusy(true);
-  try {
-    if (!user?.uid) throw new Error("Not signed in.");
-    if (!payrollMonth) throw new Error("Select payroll month.");
-    if (!payrollTeacherId) throw new Error("Select teacher.");
+    setPayrollOtherDeductions((prev) => [...prev, { id, label, amount: amt }]);
 
-    await upsertPayrollAdjustments({
-      teacherId: payrollTeacherId,
-      monthKey: payrollMonth,
-      otherDeductions: payrollOtherDeductions,
-      adminUid: user.uid,
-    });
-
-    // Reload payroll to reflect recomputed net
-    const res = await getPayrollSummary(payrollTeacherId, payrollMonth);
-    setPayrollSummary(res);
-    setPayrollOtherDeductions(res.otherDeductions || []);
-
-    toast.success("Payroll deductions saved.");
-  } catch (e) {
-    toast.error(e?.message || "Failed to save payroll deductions.");
-  } finally {
-    setPayrollBusy(false);
+    setDeductionLabel("");
+    setDeductionAmount("");
   }
-}
 
+  function removeOtherDeduction(id) {
+    setPayrollOtherDeductions((prev) => prev.filter((x) => x.id !== id));
+  }
+
+  async function savePayrollDeductions() {
+    toast.dismiss();
+    setPayrollBusy(true);
+    try {
+      if (!user?.uid) throw new Error("Not signed in.");
+      if (!payrollMonth) throw new Error("Select payroll month.");
+      if (!payrollTeacherId) throw new Error("Select teacher.");
+
+      await upsertPayrollAdjustments({
+        teacherId: payrollTeacherId,
+        monthKey: payrollMonth,
+        otherDeductions: payrollOtherDeductions,
+        adminUid: user.uid,
+      });
+
+      // Reload payroll to reflect recomputed net
+      const res = await getPayrollSummary(payrollTeacherId, payrollMonth);
+      setPayrollSummary(res);
+      setPayrollOtherDeductions(res.otherDeductions || []);
+
+      toast.success("Payroll deductions saved.");
+    } catch (e) {
+      toast.error(e?.message || "Failed to save payroll deductions.");
+    } finally {
+      setPayrollBusy(false);
+    }
+  }
 
   async function loadBursaryDailyTotals(from, to) {
     setBursaryBusy(true);
@@ -680,7 +772,7 @@ async function savePayrollDeductions() {
       collection(db, "fee_receipts"),
       where("date", "==", today),
       orderBy("createdAt", "desc"),
-      limit(20)
+      limit(20),
     );
     const snap = await getDocs(rq);
     const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -688,6 +780,7 @@ async function savePayrollDeductions() {
   }
 
   async function refresh() {
+    console.log("DEBUG refresh start");
     const s = await getSchoolConfig();
     setSchool(s);
 
@@ -698,15 +791,18 @@ async function savePayrollDeductions() {
     const list = await adminListPendingCheckIns();
     setPending(list);
     const outList = await adminListPendingCheckOuts(); // defaults to today
-setPendingOut(outList);
+    setPendingOut(outList);
 
-
-    const tq = query(collection(db, "users"), where("role", "in", ["TEACHER", "NON_TEACHER"]));
+    const tq = query(
+      collection(db, "users"),
+      where("role", "in", ["TEACHER", "NON_TEACHER"]),
+    );
     const tsnap = await getDocs(tq);
     const trows = tsnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     setTeachers(trows);
 
     // Student attendance sessions
+    console.log("DEBUG refresh called");
     try {
       setSessionsBusy(true);
       const sessions = await adminGetTodayAttendanceSessionsForAllClasses();
@@ -769,8 +865,13 @@ setPendingOut(outList);
 
     // ===== Pending leave requests =====
     try {
+      console.log("DEBUG leave requests block");
+      console.log("DEBUG currentUser:", user);
       const leaves = await getPendingLeaveRequests();
       setPendingLeaves(leaves);
+      console.log("DEBUG pendingLeaves:", leaves);
+      const allLeaves = await getAllLeaveRequests();
+      console.log("DEBUG allLeaves:", allLeaves);
     } catch (e) {
       logFsError("AdminDashboard.refresh.PendingLeaves", e);
     }
@@ -778,7 +879,7 @@ setPendingOut(outList);
 
   useEffect(() => {
     refresh().catch((e) =>
-      toast.error(e?.message || "Failed to load admin data.")
+      toast.error(e?.message || "Failed to load admin data."),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -801,11 +902,11 @@ setPendingOut(outList);
     (async () => {
       try {
         const ssnap = await getDocs(
-          collection(db, "classes", selectedClassId, "students")
+          collection(db, "classes", selectedClassId, "students"),
         );
         const srows = ssnap.docs.map((d) => ({ id: d.id, ...d.data() }));
         srows.sort((a, b) =>
-          String(a.fullName || "").localeCompare(String(b.fullName || ""))
+          String(a.fullName || "").localeCompare(String(b.fullName || "")),
         );
         setStudents(srows);
       } catch (e) {
@@ -832,11 +933,11 @@ setPendingOut(outList);
     (async () => {
       try {
         const snap = await getDocs(
-          collection(db, "classes", reportClassId, "students")
+          collection(db, "classes", reportClassId, "students"),
         );
         const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         rows.sort((a, b) =>
-          String(a.fullName || "").localeCompare(String(b.fullName || ""))
+          String(a.fullName || "").localeCompare(String(b.fullName || "")),
         );
         setReportStudents(rows);
         setReportStudentId(rows[0]?.id || "");
@@ -863,7 +964,13 @@ setPendingOut(outList);
       if (!rejectReason.trim()) throw new Error("Enter a rejection reason.");
 
       await adminRejectCheckIn(rejecting.id, user.uid, rejectReason);
-      logAudit({ action: AUDIT_ACTIONS.CHECKIN_REJECTED, actorId: user.uid, actorName: user.displayName || user.email, targetId: rejecting.id, details: rejectReason });
+      logAudit({
+        action: AUDIT_ACTIONS.CHECKIN_REJECTED,
+        actorId: user.uid,
+        actorName: user.displayName || user.email,
+        targetId: rejecting.id,
+        details: rejectReason,
+      });
       setRejecting(null);
       setRejectReason("");
       await refresh();
@@ -881,7 +988,13 @@ setPendingOut(outList);
     try {
       if (!user?.uid) throw new Error("Not signed in.");
       await adminApproveCheckIn(attendanceId, user.uid);
-      logAudit({ action: AUDIT_ACTIONS.CHECKIN_APPROVED, actorId: user.uid, actorName: user.displayName || user.email, targetId: attendanceId, details: "Check-in approved" });
+      logAudit({
+        action: AUDIT_ACTIONS.CHECKIN_APPROVED,
+        actorId: user.uid,
+        actorName: user.displayName || user.email,
+        targetId: attendanceId,
+        details: "Check-in approved",
+      });
       await refresh();
       toast.success("Approval successful.");
     } catch (e) {
@@ -892,45 +1005,44 @@ setPendingOut(outList);
   }
 
   async function handleApproveOut(attendanceId) {
-  toast.dismiss();
-  setBusy(true);
-  try {
-    if (!user?.uid) throw new Error("Not signed in.");
-    await adminApproveCheckOut(attendanceId, user.uid);
-    await refresh();
-    toast.success("Checkout approved.");
-  } catch (e) {
-    toast.error(e?.message || "Checkout approval failed.");
-  } finally {
-    setBusy(false);
+    toast.dismiss();
+    setBusy(true);
+    try {
+      if (!user?.uid) throw new Error("Not signed in.");
+      await adminApproveCheckOut(attendanceId, user.uid);
+      await refresh();
+      toast.success("Checkout approved.");
+    } catch (e) {
+      toast.error(e?.message || "Checkout approval failed.");
+    } finally {
+      setBusy(false);
+    }
   }
-}
 
-function handleRejectOut(attendance) {
-  setRejectingOut(attendance);
-  setRejectReasonOut("");
-}
-
-async function confirmRejectOut() {
-  toast.dismiss();
-  setBusy(true);
-  try {
-    if (!user?.uid) throw new Error("Not signed in.");
-    if (!rejectingOut?.id) throw new Error("No request selected.");
-    if (!rejectReasonOut.trim()) throw new Error("Enter a rejection reason.");
-
-    await adminRejectCheckOut(rejectingOut.id, user.uid, rejectReasonOut);
-    setRejectingOut(null);
+  function handleRejectOut(attendance) {
+    setRejectingOut(attendance);
     setRejectReasonOut("");
-    await refresh();
-    toast.success("Checkout rejected.");
-  } catch (e) {
-    toast.error(e?.message || "Checkout rejection failed.");
-  } finally {
-    setBusy(false);
   }
-}
 
+  async function confirmRejectOut() {
+    toast.dismiss();
+    setBusy(true);
+    try {
+      if (!user?.uid) throw new Error("Not signed in.");
+      if (!rejectingOut?.id) throw new Error("No request selected.");
+      if (!rejectReasonOut.trim()) throw new Error("Enter a rejection reason.");
+
+      await adminRejectCheckOut(rejectingOut.id, user.uid, rejectReasonOut);
+      setRejectingOut(null);
+      setRejectReasonOut("");
+      await refresh();
+      toast.success("Checkout rejected.");
+    } catch (e) {
+      toast.error(e?.message || "Checkout rejection failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // ============================
   // Blocked Teacher handlers
@@ -950,12 +1062,24 @@ async function confirmRejectOut() {
   }
 
   async function handleUnblockTeacher(uid, teacherName) {
-    if (!window.confirm(`Unblock "${teacherName || 'this teacher'}"? They will be able to check in again.`)) return;
+    if (
+      !window.confirm(
+        `Unblock "${teacherName || "this teacher"}"? They will be able to check in again.`,
+      )
+    )
+      return;
     toast.dismiss();
     setBlockedBusy(true);
     try {
       await unblockTeacher(uid);
-      logAudit({ action: AUDIT_ACTIONS.TEACHER_UNBLOCKED, actorId: user?.uid, actorName: user?.displayName || user?.email, targetId: uid, targetName: teacherName, details: "Teacher unblocked by admin" });
+      logAudit({
+        action: AUDIT_ACTIONS.TEACHER_UNBLOCKED,
+        actorId: user?.uid,
+        actorName: user?.displayName || user?.email,
+        targetId: uid,
+        targetName: teacherName,
+        details: "Teacher unblocked by admin",
+      });
       setSelectedBlockedTeacher(null);
       setBlockedTeacherReasons([]);
       await refresh();
@@ -967,7 +1091,6 @@ async function confirmRejectOut() {
     }
   }
 
-
   async function handleGenerateOrRotateCode() {
     toast.dismiss();
     setBusy(true);
@@ -977,7 +1100,9 @@ async function confirmRejectOut() {
       await ensureSchoolConfig(user.uid);
       await generateDailyCodesForStaff(user.uid, teachers);
       await refresh();
-      toast.success(`Daily codes generated for ${teachers.length} staff members.`);
+      toast.success(
+        `Daily codes generated for ${teachers.length} staff members.`,
+      );
     } catch (e) {
       toast.error(e?.message || "Failed to generate daily codes.");
     } finally {
@@ -1055,15 +1180,29 @@ async function confirmRejectOut() {
   }
 
   async function handleDeleteClass(cls) {
-    if (!window.confirm(`Delete class "${cls.name}"? This will remove the class and all its students permanently.`)) return;
+    if (
+      !window.confirm(
+        `Delete class "${cls.name}"? This will remove the class and all its students permanently.`,
+      )
+    )
+      return;
     toast.dismiss();
     setBusy(true);
     try {
       // Delete all students in the class first
-      const studentsSnap = await getDocs(collection(db, "classes", cls.id, "students"));
+      const studentsSnap = await getDocs(
+        collection(db, "classes", cls.id, "students"),
+      );
       await Promise.all(studentsSnap.docs.map((d) => deleteDoc(d.ref)));
       await deleteDoc(doc(db, "classes", cls.id));
-      logAudit({ action: AUDIT_ACTIONS.CLASS_DELETED, actorId: user?.uid, actorName: user?.displayName || user?.email, targetId: cls.id, targetName: cls.name, details: `Class "${cls.name}" deleted` });
+      logAudit({
+        action: AUDIT_ACTIONS.CLASS_DELETED,
+        actorId: user?.uid,
+        actorName: user?.displayName || user?.email,
+        targetId: cls.id,
+        targetName: cls.name,
+        details: `Class "${cls.name}" deleted`,
+      });
       await refresh();
       if (selectedClassId === cls.id) {
         setSelectedClassId("");
@@ -1093,14 +1232,18 @@ async function confirmRejectOut() {
 
       await updateDoc(
         doc(db, "classes", selectedClassId, "students", editingStudent.id),
-        { fullName: name, updatedAt: serverTimestamp() }
+        { fullName: name, updatedAt: serverTimestamp() },
       );
 
       setEditingStudent(null);
       // Refresh student list
-      const ssnap = await getDocs(collection(db, "classes", selectedClassId, "students"));
+      const ssnap = await getDocs(
+        collection(db, "classes", selectedClassId, "students"),
+      );
       const srows = ssnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      srows.sort((a, b) => String(a.fullName || "").localeCompare(String(b.fullName || "")));
+      srows.sort((a, b) =>
+        String(a.fullName || "").localeCompare(String(b.fullName || "")),
+      );
       setStudents(srows);
       toast.success("Student name updated.");
     } catch (e) {
@@ -1124,7 +1267,7 @@ async function confirmRejectOut() {
         collection(db, "attendance"),
         where("teacherId", "==", teacherUid),
         orderBy("date", "desc"),
-        limit(30)
+        limit(30),
       );
       const snap = await getDocs(q2);
       const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -1175,16 +1318,16 @@ async function confirmRejectOut() {
 
     <div class="row"><div>Student</div><div>${safe(r.studentName)}</div></div>
     <div class="row"><div>Class</div><div>${safe(
-      r.className || "—"
+      r.className || "—",
     )}</div></div>
     <div class="row"><div>Method</div><div>${safe(r.paymentMethod)}</div></div>
     <div class="row"><div>Reference</div><div>${safe(
-      r.reference || "—"
+      r.reference || "—",
     )}</div></div>
 
     <div class="hr"></div>
     <div class="row total"><div>Amount</div><div>${safe(r.currency)} ${safe(
-      r.amount
+      r.amount,
     )}</div></div>
 
     <div class="hr"></div>
@@ -1267,7 +1410,7 @@ async function confirmRejectOut() {
     setEditContact(t.contact || "");
     setEditAddress(t.address || "");
     setEditSalary(
-      t.baseMonthlySalary != null ? String(t.baseMonthlySalary) : ""
+      t.baseMonthlySalary != null ? String(t.baseMonthlySalary) : "",
     );
     setEditEmail(t.email || "");
   }
@@ -1314,11 +1457,11 @@ async function confirmRejectOut() {
         doc(db, "classes", selectedClassId, "students", studentId),
         {
           ...patch,
-        }
+        },
       );
 
       setStudents((prev) =>
-        prev.map((s) => (s.id === studentId ? { ...s, ...patch } : s))
+        prev.map((s) => (s.id === studentId ? { ...s, ...patch } : s)),
       );
       toast.success("Updated exemptions.");
     } catch (e) {
@@ -1354,7 +1497,9 @@ async function confirmRejectOut() {
         try {
           const sts = await getStudentsForClass(session.classId);
           setOverrideStudents(sts);
-        } catch { /* ignore — override just won't show dropdown */ }
+        } catch {
+          /* ignore — override just won't show dropdown */
+        }
       }
     } catch (e) {
       toast.error(e?.message || "Failed to load absent list.");
@@ -1368,7 +1513,12 @@ async function confirmRejectOut() {
     if (!openSessionId) return;
     setOverrideBusy(studentId);
     try {
-      await adminOverrideAttendance(openSessionId, studentId, studentName, action);
+      await adminOverrideAttendance(
+        openSessionId,
+        studentId,
+        studentName,
+        action,
+      );
       // Refresh absent list
       const rows = await adminGetAbsentList(openSessionId);
       setOpenAbsent(rows);
@@ -1377,11 +1527,19 @@ async function confirmRejectOut() {
         prev.map((s) => {
           if (s.id !== openSessionId) return s;
           const newAbsent = rows.length;
-          return { ...s, absentCount: newAbsent, presentCount: s.totalStudents - newAbsent };
-        })
+          return {
+            ...s,
+            absentCount: newAbsent,
+            presentCount: s.totalStudents - newAbsent,
+          };
+        }),
       );
       setOverrideAddId("");
-      toast.success(action === "MARK_PRESENT" ? "Student marked present." : "Student marked absent.");
+      toast.success(
+        action === "MARK_PRESENT"
+          ? "Student marked present."
+          : "Student marked absent.",
+      );
     } catch (e) {
       toast.error(e?.message || "Override failed.");
     } finally {
@@ -1394,7 +1552,10 @@ async function confirmRejectOut() {
     if (!selectedClassId || !students.length) return;
     setRatesBusy(true);
     try {
-      const rates = await getStudentAttendanceRates(selectedClassId, students.map((s) => s.id));
+      const rates = await getStudentAttendanceRates(
+        selectedClassId,
+        students.map((s) => s.id),
+      );
       setStudentRates(rates);
     } catch {
       toast.error("Failed to load attendance rates.");
@@ -1440,7 +1601,7 @@ async function confirmRejectOut() {
 
       const aq = query(
         collection(db, "attendance"),
-        where("monthKey", "==", monthKey)
+        where("monthKey", "==", monthKey),
       );
       const snap = await getDocs(aq);
 
@@ -1497,7 +1658,12 @@ async function confirmRejectOut() {
         updatedAt: serverTimestamp(),
       });
 
-      logAudit({ action: AUDIT_ACTIONS.CLASS_CREATED, actorId: user?.uid, actorName: user?.displayName || user?.email, details: `Class "${name}" created, teacher: ${teacher.fullName || teacher.email}` });
+      logAudit({
+        action: AUDIT_ACTIONS.CLASS_CREATED,
+        actorId: user?.uid,
+        actorName: user?.displayName || user?.email,
+        details: `Class "${name}" created, teacher: ${teacher.fullName || teacher.email}`,
+      });
       setClassName("");
       setClassTeacherId("");
       await refresh();
@@ -1549,17 +1715,23 @@ async function confirmRejectOut() {
         updatedAt: serverTimestamp(),
       });
 
-      logAudit({ action: AUDIT_ACTIONS.STUDENT_ADDED, actorId: user?.uid, actorName: user?.displayName || user?.email, targetName: n, details: `Student "${n}" added to ${selectedClass.name}` });
+      logAudit({
+        action: AUDIT_ACTIONS.STUDENT_ADDED,
+        actorId: user?.uid,
+        actorName: user?.displayName || user?.email,
+        targetName: n,
+        details: `Student "${n}" added to ${selectedClass.name}`,
+      });
       setStudentName("");
       setParentPhone("");
       setParentName("");
 
       const ssnap = await getDocs(
-        collection(db, "classes", selectedClassId, "students")
+        collection(db, "classes", selectedClassId, "students"),
       );
       const srows = ssnap.docs.map((d) => ({ id: d.id, ...d.data() }));
       srows.sort((a, b) =>
-        String(a.fullName || "").localeCompare(String(b.fullName || ""))
+        String(a.fullName || "").localeCompare(String(b.fullName || "")),
       );
       setStudents(srows);
 
@@ -1572,23 +1744,35 @@ async function confirmRejectOut() {
   }
 
   async function handleRemoveStudent(studentId, studentName) {
-    if (!window.confirm(`Remove "${studentName || 'this student'}" from the class? This cannot be undone.`)) return;
+    if (
+      !window.confirm(
+        `Remove "${studentName || "this student"}" from the class? This cannot be undone.`,
+      )
+    )
+      return;
     toast.dismiss();
     setBusy(true);
     try {
       if (!selectedClassId) throw new Error("Select a class first.");
 
       await deleteDoc(
-        doc(db, "classes", selectedClassId, "students", studentId)
+        doc(db, "classes", selectedClassId, "students", studentId),
       );
-      logAudit({ action: AUDIT_ACTIONS.STUDENT_DELETED, actorId: user?.uid, actorName: user?.displayName || user?.email, targetId: studentId, targetName: studentName, details: `Student "${studentName}" removed from class` });
+      logAudit({
+        action: AUDIT_ACTIONS.STUDENT_DELETED,
+        actorId: user?.uid,
+        actorName: user?.displayName || user?.email,
+        targetId: studentId,
+        targetName: studentName,
+        details: `Student "${studentName}" removed from class`,
+      });
 
       const ssnap = await getDocs(
-        collection(db, "classes", selectedClassId, "students")
+        collection(db, "classes", selectedClassId, "students"),
       );
       const srows = ssnap.docs.map((d) => ({ id: d.id, ...d.data() }));
       srows.sort((a, b) =>
-        String(a.fullName || "").localeCompare(String(b.fullName || ""))
+        String(a.fullName || "").localeCompare(String(b.fullName || "")),
       );
       setStudents(srows);
 
@@ -1623,7 +1807,7 @@ async function confirmRejectOut() {
         "students",
         reportStudentId,
         "reports",
-        rid
+        rid,
       );
       const snap = await getDoc(ref);
       if (!snap.exists())
@@ -1643,14 +1827,14 @@ async function confirmRejectOut() {
             "students",
             st.id,
             "reports",
-            rid
+            rid,
           );
           const rsnap = await getDoc(rref);
           if (!rsnap.exists()) return null;
           const rep = rsnap.data();
           const total = calcOverallTotal(rep);
           return { studentId: st.id, total };
-        })
+        }),
       );
 
       const valid = rankingRows.filter((x) => x && Number.isFinite(x.total));
@@ -1769,34 +1953,34 @@ async function confirmRejectOut() {
         <p class="title">${safe(schoolName || "School")} — Student Report</p>
         <div class="meta">
           <div><span class="muted">Student:</span> <b>${safe(
-            student.fullName || report.studentName || "—"
+            student.fullName || report.studentName || "—",
           )}</b></div>
           <div><span class="muted">Class:</span> <b>${safe(
-            cls.name || report.className || "—"
+            cls.name || report.className || "—",
           )}</b></div>
           <div><span class="muted">Year/Term:</span> <b>${safe(
-            report.year ?? ""
+            report.year ?? "",
           )} / ${safe(
-      report.termName || `Term ${report.termNo || ""}`
-    )}</b></div>
+            report.termName || `Term ${report.termNo || ""}`,
+          )}</b></div>
           <div><span class="muted">Report Date:</span> <b>${safe(
-            report.reportDate || "—"
+            report.reportDate || "—",
           )}</b></div>
         </div>
       </div>
       <div class="meta" style="text-align:right;">
         <div><span class="muted">Report ID:</span> <b>${safe(
-          report.id
+          report.id,
         )}</b></div>
         <div><span class="muted">Type:</span> <b>${safe(
-          report.reportType || ""
+          report.reportType || "",
         )}</b></div>
         <div><span class="muted">Total Score:</span> <b>${safe(
-          overallTotal
+          overallTotal,
         )}</b></div>
         <div><span class="muted">Position:</span> <b>${safe(positionText)}${
-      outOfText ? ` out of ${safe(outOfText)}` : ""
-    }</b></div>
+          outOfText ? ` out of ${safe(outOfText)}` : ""
+        }</b></div>
       </div>
     </div>
 
@@ -1842,7 +2026,7 @@ async function confirmRejectOut() {
       <div class="box">
         <h3>NOTE</h3>
         <div class="meta">This print layout is currently optimized for PRESCHOOL report type. Report type is: <b>${safe(
-          report.reportType || ""
+          report.reportType || "",
         )}</b></div>
       </div>
     `
@@ -1866,15 +2050,15 @@ async function confirmRejectOut() {
 
       <div class="line">
         <div><span class="muted">Attendance:</span> ${safe(
-          present
+          present,
         )} out of ${safe(totalDays)}</div>
         <div><span class="muted">No. on Roll:</span> ${safe(
-          report.rollNo ?? "—"
+          report.rollNo ?? "—",
         )}</div>
       </div>
       <div class="line">
         <div><span class="muted">Next Term Begins:</span> ${safe(
-          report.nextTermBegins || "—"
+          report.nextTermBegins || "—",
         )}</div>
       </div>
     </div>
@@ -1882,10 +2066,10 @@ async function confirmRejectOut() {
     <div class="box">
       <h3>REMARKS</h3>
       <div class="line"><div><span class="muted">Class Teacher’s Remarks:</span> <b>${safe(
-        report.teacherRemarks || "—"
+        report.teacherRemarks || "—",
       )}</b></div></div>
       <div class="line"><div><span class="muted">H.O.D recommendation:</span> <b>${safe(
-        report.hodRecommendation || "—"
+        report.hodRecommendation || "—",
       )}</b></div></div>
 
       <div class="sig">
@@ -1948,6 +2132,7 @@ async function confirmRejectOut() {
               </p>
             </div>
             <div className="flex items-center gap-3">
+              <RoleSwitcher roles={roles} activeRole={activeRole} onSwitch={switchRole} />
               <LanguageSwitcher />
               <button
                 onClick={() => signOut(auth)}
@@ -1963,36 +2148,143 @@ async function confirmRejectOut() {
         {holidayName ? (
           <div className="mb-6 rounded-2xl border border-amber-300 bg-linear-to-r from-amber-50 to-yellow-50 px-5 py-5 shadow-sm">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-2xl">🎉</div>
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-2xl">
+                🎉
+              </div>
               <div>
-                <div className="text-lg font-bold text-amber-700">Today is a Public Holiday!</div>
-                <div className="mt-1 text-base font-semibold text-amber-800">{holidayName}</div>
-                <div className="mt-1 text-sm text-amber-700">Enjoy your day off, admin!</div>
+                <div className="text-lg font-bold text-amber-700">
+                  Today is a Public Holiday!
+                </div>
+                <div className="mt-1 text-base font-semibold text-amber-800">
+                  {holidayName}
+                </div>
+                <div className="mt-1 text-sm text-amber-700">
+                  Enjoy your day off, admin!
+                </div>
               </div>
             </div>
           </div>
         ) : dailyQuote ? (
           <div className="mb-6 rounded-2xl border border-purple-200 bg-linear-to-br from-purple-50 via-indigo-50 to-pink-50 p-5 shadow-sm">
-            <p className="text-sm font-semibold text-purple-600">🏛️ {dailyQuote.greeting}</p>
-            <p className="mt-2 text-base italic text-slate-800">&ldquo;{dailyQuote.quote}&rdquo;</p>
-            <p className="mt-1 text-xs font-medium text-slate-500">— {dailyQuote.author}</p>
+            <p className="text-sm font-semibold text-purple-600">
+              🏛️ {dailyQuote.greeting}
+            </p>
+            <p className="mt-2 text-base italic text-slate-800">
+              &ldquo;{dailyQuote.quote}&rdquo;
+            </p>
+            <p className="mt-1 text-xs font-medium text-slate-500">
+              — {dailyQuote.author}
+            </p>
           </div>
         ) : null}
 
         {/* ═══ Tab Navigation ═══ */}
         <div className="mb-6 flex flex-wrap gap-2">
           {[
-            { id: "overview",   label: "Overview",    icon: "📊", bg: "bg-indigo-500",  ring: "ring-indigo-300",  badge: pending.length + pendingOut.length },
-            { id: "teachers",   label: "Teachers",    icon: "👥", bg: "bg-violet-500",  ring: "ring-violet-300",  badge: 0 },
-            { id: "classes",    label: "Classes",     icon: "🏫", bg: "bg-teal-500",    ring: "ring-teal-300",    badge: 0 },
-            { id: "attendance", label: "Attendance",  icon: "✅", bg: "bg-emerald-500", ring: "ring-emerald-300", badge: 0 },
-            { id: "finance",    label: "Finance",     icon: "💰", bg: "bg-amber-500",   ring: "ring-amber-300",   badge: 0 },
-            { id: "reports",    label: "Reports",     icon: "📝", bg: "bg-rose-500",    ring: "ring-rose-300",    badge: 0 },
-            { id: "tests",      label: "Tests",       icon: "📋", bg: "bg-cyan-500",    ring: "ring-cyan-300",    badge: 0 },
-            { id: "payroll",    label: "Payroll",     icon: "💵", bg: "bg-sky-500",     ring: "ring-sky-300",     badge: 0 },
-            { id: "notifications", label: "Notifications", icon: "🔔", bg: "bg-pink-500", ring: "ring-pink-300", badge: 0 },
-            { id: "audit", label: "Audit Log", icon: "🕵️", bg: "bg-slate-600", ring: "ring-slate-400", badge: 0 },
-            { id: "assessment", label: "Assessment", icon: "📋", bg: "bg-violet-600", ring: "ring-violet-300", badge: 0 },
+            {
+              id: "overview",
+              label: "Overview",
+              icon: "📊",
+              bg: "bg-indigo-500",
+              ring: "ring-indigo-300",
+              badge: pending.length + pendingOut.length,
+            },
+            {
+              id: "teachers",
+              label: "Teachers",
+              icon: "👥",
+              bg: "bg-violet-500",
+              ring: "ring-violet-300",
+              badge: 0,
+            },
+            {
+              id: "classes",
+              label: "Classes",
+              icon: "🏫",
+              bg: "bg-teal-500",
+              ring: "ring-teal-300",
+              badge: 0,
+            },
+            {
+              id: "attendance",
+              label: "Attendance",
+              icon: "✅",
+              bg: "bg-emerald-500",
+              ring: "ring-emerald-300",
+              badge: 0,
+            },
+            {
+              id: "finance",
+              label: "Finance",
+              icon: "💰",
+              bg: "bg-amber-500",
+              ring: "ring-amber-300",
+              badge: 0,
+            },
+            {
+              id: "reports",
+              label: "Reports",
+              icon: "📝",
+              bg: "bg-rose-500",
+              ring: "ring-rose-300",
+              badge: 0,
+            },
+            {
+              id: "tests",
+              label: "Tests",
+              icon: "📋",
+              bg: "bg-cyan-500",
+              ring: "ring-cyan-300",
+              badge: 0,
+            },
+            {
+              id: "payroll",
+              label: "Payroll",
+              icon: "💵",
+              bg: "bg-sky-500",
+              ring: "ring-sky-300",
+              badge: 0,
+            },
+            {
+              id: "notifications",
+              label: "Notifications",
+              icon: "🔔",
+              bg: "bg-pink-500",
+              ring: "ring-pink-300",
+              badge: 0,
+            },
+            {
+              id: "audit",
+              label: "Audit Log",
+              icon: "🕵️",
+              bg: "bg-slate-600",
+              ring: "ring-slate-400",
+              badge: 0,
+            },
+            {
+              id: "assessment",
+              label: "Assessment",
+              icon: "📋",
+              bg: "bg-violet-600",
+              ring: "ring-violet-300",
+              badge: 0,
+            },
+            {
+              id: "exams",
+              label: "Exam Papers",
+              icon: "📚",
+              bg: "bg-fuchsia-600",
+              ring: "ring-fuchsia-300",
+              badge: adminExams.filter((e) => e.status === EXAM_STATUSES.SUBMITTED).length,
+            },
+            {
+              id: "userroles",
+              label: "Users & Roles",
+              icon: "👥",
+              bg: "bg-gray-700",
+              ring: "ring-gray-400",
+              badge: 0,
+            },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -2017,842 +2309,2006 @@ async function confirmRejectOut() {
 
         {/* ═══ TAB: Overview ═══ */}
         <div className={activeTab !== "overview" ? "hidden" : ""}>
-        <div className="grid gap-6 md:grid-cols-2">
-          {/* Daily Codes (Per Staff) */}
-          <div className="rounded-2xl border border-indigo-200 bg-linear-to-br from-indigo-50 to-blue-50 p-6 shadow-sm">
-            <h2 className="text-base font-semibold text-indigo-900">
-              Daily Codes (Per Staff)
-            </h2>
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Daily Codes (Per Staff) */}
+            <div className="rounded-2xl border border-indigo-200 bg-linear-to-br from-indigo-50 to-blue-50 p-6 shadow-sm">
+              <h2 className="text-base font-semibold text-indigo-900">
+                Daily Codes (Per Staff)
+              </h2>
 
-            <div className="mt-3 text-sm text-slate-700">
-              <div className="flex justify-between">
-                <span className="text-slate-600">Code date</span>
-                <span className="font-semibold">
-                  {dailyCodes?.date || "—"}
-                </span>
-              </div>
-
-              <div className="mt-2 flex justify-between">
-                <span className="text-slate-600">Expires</span>
-                <span className="font-semibold">
-                  {minutesToHHMM(school?.codeExpiresMinutes ?? 380)}
-                </span>
-              </div>
-
-              <div className="mt-2 flex justify-between">
-                <span className="text-slate-600">Late after</span>
-                <span className="font-semibold">
-                  {minutesToHHMM(school?.lateAfterMinutes ?? 375)}
-                </span>
-              </div>
-
-              <div className="mt-2 flex justify-between">
-                <span className="text-slate-600">Penalty per late</span>
-                <span className="font-semibold">
-                  {school?.currency ?? "GHS"}{" "}
-                  {Number(school?.penaltyPerLate ?? 5)}
-                </span>
-              </div>
-            </div>
-
-            {/* Per-staff codes table */}
-            {dailyCodes?.codes ? (
-              <div className="mt-4 max-h-60 overflow-y-auto rounded-xl border border-slate-200">
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-slate-50">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-medium text-slate-600">Staff</th>
-                      <th className="px-3 py-2 text-right font-medium text-slate-600">Code</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {teachers
-                      .filter((t) => dailyCodes.codes[t.id])
-                      .sort((a, b) => (a.fullName || "").localeCompare(b.fullName || ""))
-                      .map((t) => (
-                        <tr key={t.id} className="hover:bg-slate-50">
-                          <td className="px-3 py-2 text-slate-800">{t.fullName || t.id}</td>
-                          <td className="px-3 py-2 text-right font-mono font-semibold text-slate-900">
-                            {dailyCodes.codes[t.id]}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="mt-4 text-sm text-slate-500">No codes generated yet for today.</p>
-            )}
-
-            <button
-              disabled={busy}
-              onClick={handleGenerateOrRotateCode}
-              className="mt-4 w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
-            >
-              {busy ? "Working..." : "Generate Daily Codes for All Staff"}
-            </button>
-
-            <p className="mt-2 text-xs text-slate-500">
-              Generates a unique 4-digit code for each staff member. Regenerating replaces all codes for today.
-            </p>
-          </div>
-
-          {/* School Settings */}
-          <div className="rounded-2xl border border-purple-200 bg-linear-to-br from-purple-50 to-pink-50 p-6 shadow-sm">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold text-purple-900">⚙️ School Settings</h2>
-              {!editingSettings && (
-                <button
-                  onClick={openSettingsEditor}
-                  className="rounded-lg border border-purple-200 bg-white px-3 py-1.5 text-xs font-semibold text-purple-700 hover:bg-purple-50"
-                >
-                  Edit
-                </button>
-              )}
-            </div>
-
-            {editingSettings ? (
-              <div className="mt-4 space-y-3">
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">Late after (minutes from midnight)</label>
-                  <input
-                    type="number"
-                    value={settingsForm.lateAfterMinutes}
-                    onChange={(e) => setSettingsForm({ ...settingsForm, lateAfterMinutes: e.target.value })}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:ring"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">Code expires (minutes from midnight)</label>
-                  <input
-                    type="number"
-                    value={settingsForm.codeExpiresMinutes}
-                    onChange={(e) => setSettingsForm({ ...settingsForm, codeExpiresMinutes: e.target.value })}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:ring"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">Penalty per late ({settingsForm.currency || "GHS"})</label>
-                  <input
-                    type="number"
-                    value={settingsForm.penaltyPerLate}
-                    onChange={(e) => setSettingsForm({ ...settingsForm, penaltyPerLate: e.target.value })}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:ring"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">Currency code</label>
-                  <input
-                    value={settingsForm.currency}
-                    onChange={(e) => setSettingsForm({ ...settingsForm, currency: e.target.value })}
-                    placeholder="GHS"
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:ring"
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    disabled={busy}
-                    onClick={handleSaveSettings}
-                    className="flex-1 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-purple-500 disabled:opacity-60"
-                  >
-                    {busy ? "Saving..." : "Save Settings"}
-                  </button>
-                  <button
-                    onClick={() => setEditingSettings(false)}
-                    className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="mt-4 space-y-2 text-sm text-slate-700">
+              <div className="mt-3 text-sm text-slate-700">
                 <div className="flex justify-between">
+                  <span className="text-slate-600">Code date</span>
+                  <span className="font-semibold">
+                    {dailyCodes?.date || "—"}
+                  </span>
+                </div>
+
+                <div className="mt-2 flex justify-between">
+                  <span className="text-slate-600">Expires</span>
+                  <span className="font-semibold">
+                    {minutesToHHMM(school?.codeExpiresMinutes ?? 380)}
+                  </span>
+                </div>
+
+                <div className="mt-2 flex justify-between">
                   <span className="text-slate-600">Late after</span>
-                  <span className="font-semibold">{minutesToHHMM(school?.lateAfterMinutes ?? 375)}</span>
+                  <span className="font-semibold">
+                    {minutesToHHMM(school?.lateAfterMinutes ?? 375)}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Code expires</span>
-                  <span className="font-semibold">{minutesToHHMM(school?.codeExpiresMinutes ?? 380)}</span>
-                </div>
-                <div className="flex justify-between">
+
+                <div className="mt-2 flex justify-between">
                   <span className="text-slate-600">Penalty per late</span>
-                  <span className="font-semibold">{school?.currency ?? "GHS"} {Number(school?.penaltyPerLate ?? 5)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Currency</span>
-                  <span className="font-semibold">{school?.currency ?? "GHS"}</span>
+                  <span className="font-semibold">
+                    {school?.currency ?? "GHS"}{" "}
+                    {Number(school?.penaltyPerLate ?? 5)}
+                  </span>
                 </div>
               </div>
-            )}
-          </div>
 
-          {/* Pending approvals */}
-          <div className="rounded-2xl border border-orange-200 bg-linear-to-br from-orange-50 to-amber-50 p-6 shadow-sm">
-            <h2 className="text-base font-semibold text-orange-900">
-              Pending Check-ins
-            </h2>
-
-            <div className="mt-4 space-y-3">
-              {pending.length ? (
-                pending.map((p) => (
-                  <div
-                    key={p.id}
-                    className="rounded-xl border border-slate-200 p-4"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-semibold text-slate-900">
-                          {p.teacherName || p.teacherId}
-                        </div>
-                        <div className="text-xs text-slate-600">
-                          Date: {p.date} • Requested:{" "}
-                          {p.checkInRequestedAt
-                            ? new Date(
-                                p.checkInRequestedAt.toMillis()
-                              ).toLocaleTimeString()
-                            : "—"}
-                        </div>
-                        <div className="text-xs text-slate-600">
-                          Code used: {p.checkInCodeUsed || "—"}
-                          {p.codeExpiredAtRequest ? (
-                            <span className="ml-2 rounded-md bg-amber-50 px-2 py-0.5 text-amber-700">
-                              expired-at-request
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div className="flex gap-2">
-                        <button
-                          disabled={busy}
-                          onClick={() => handleApprove(p.id)}
-                          className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
-                        >
-                          Approve
-                        </button>
-
-                        <button
-                          disabled={busy}
-                          onClick={() => handleReject(p)}
-                          className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-sm text-slate-600">
-                  No pending requests.
+              {/* Per-staff codes table */}
+              {dailyCodes?.codes ? (
+                <div className="mt-4 max-h-60 overflow-y-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-slate-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-medium text-slate-600">
+                          Staff
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium text-slate-600">
+                          Code
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {teachers
+                        .filter((t) => dailyCodes.codes[t.id])
+                        .sort((a, b) =>
+                          (a.fullName || "").localeCompare(b.fullName || ""),
+                        )
+                        .map((t) => (
+                          <tr key={t.id} className="hover:bg-slate-50">
+                            <td className="px-3 py-2 text-slate-800">
+                              {t.fullName || t.id}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono font-semibold text-slate-900">
+                              {dailyCodes.codes[t.id]}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
                 </div>
+              ) : (
+                <p className="mt-4 text-sm text-slate-500">
+                  No codes generated yet for today.
+                </p>
               )}
+
+              <button
+                disabled={busy}
+                onClick={handleGenerateOrRotateCode}
+                className="mt-4 w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
+              >
+                {busy ? "Working..." : "Generate Daily Codes for All Staff"}
+              </button>
+
+              <p className="mt-2 text-xs text-slate-500">
+                Generates a unique 4-digit code for each staff member.
+                Regenerating replaces all codes for today.
+              </p>
             </div>
 
-            {rejecting ? (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-                <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-lg">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <h3 className="text-lg font-semibold text-slate-900">
-                        Reject Check-in
-                      </h3>
-                      <p className="text-sm text-slate-600">
-                        {rejecting.teacherName || rejecting.teacherId} •{" "}
-                        {rejecting.date}
-                      </p>
-                    </div>
-                    <button
-                      className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                      onClick={() => setRejecting(null)}
-                      disabled={busy}
-                    >
-                      Close
-                    </button>
-                  </div>
+            {/* School Settings */}
+            <div className="rounded-2xl border border-purple-200 bg-linear-to-br from-purple-50 to-pink-50 p-6 shadow-sm">
+              <div className="flex items-center justify-between">
+                <h2 className="text-base font-semibold text-purple-900">
+                  ⚙️ School Settings
+                </h2>
+                {!editingSettings && (
+                  <button
+                    onClick={openSettingsEditor}
+                    className="rounded-lg border border-purple-200 bg-white px-3 py-1.5 text-xs font-semibold text-purple-700 hover:bg-purple-50"
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
 
-                  <div className="mt-5">
+              {editingSettings ? (
+                <div className="mt-4 space-y-3">
+                  <div>
                     <label className="text-xs font-semibold text-slate-600">
-                      Reason
+                      Late after (minutes from midnight)
                     </label>
-                    <textarea
-                      value={rejectReason}
-                      onChange={(e) => setRejectReason(e.target.value)}
-                      rows={4}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring"
-                      placeholder="Example: Wrong code / not on premises / contact admin..."
+                    <input
+                      type="number"
+                      value={settingsForm.lateAfterMinutes}
+                      onChange={(e) =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          lateAfterMinutes: e.target.value,
+                        })
+                      }
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:ring"
                     />
                   </div>
-
-                  <div className="mt-6 flex gap-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Code expires (minutes from midnight)
+                    </label>
+                    <input
+                      type="number"
+                      value={settingsForm.codeExpiresMinutes}
+                      onChange={(e) =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          codeExpiresMinutes: e.target.value,
+                        })
+                      }
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:ring"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Penalty per late ({settingsForm.currency || "GHS"})
+                    </label>
+                    <input
+                      type="number"
+                      value={settingsForm.penaltyPerLate}
+                      onChange={(e) =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          penaltyPerLate: e.target.value,
+                        })
+                      }
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:ring"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Currency code
+                    </label>
+                    <input
+                      value={settingsForm.currency}
+                      onChange={(e) =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          currency: e.target.value,
+                        })
+                      }
+                      placeholder="GHS"
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:ring"
+                    />
+                  </div>
+                  <div className="flex gap-2">
                     <button
                       disabled={busy}
-                      onClick={confirmReject}
-                      className="w-full rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                      onClick={handleSaveSettings}
+                      className="flex-1 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-purple-500 disabled:opacity-60"
                     >
-                      {busy ? "Rejecting..." : "Confirm Reject"}
+                      {busy ? "Saving..." : "Save Settings"}
+                    </button>
+                    <button
+                      onClick={() => setEditingSettings(false)}
+                      className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                    >
+                      Cancel
                     </button>
                   </div>
                 </div>
-              </div>
-            ) : null}
-          </div>
+              ) : (
+                <div className="mt-4 space-y-2 text-sm text-slate-700">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Late after</span>
+                    <span className="font-semibold">
+                      {minutesToHHMM(school?.lateAfterMinutes ?? 375)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Code expires</span>
+                    <span className="font-semibold">
+                      {minutesToHHMM(school?.codeExpiresMinutes ?? 380)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Penalty per late</span>
+                    <span className="font-semibold">
+                      {school?.currency ?? "GHS"}{" "}
+                      {Number(school?.penaltyPerLate ?? 5)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Currency</span>
+                    <span className="font-semibold">
+                      {school?.currency ?? "GHS"}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
 
-          {/* Pending check-outs */}
-<div className="rounded-2xl border border-orange-200 bg-linear-to-br from-orange-50 to-amber-50 p-6 shadow-sm">
-  <h2 className="text-base font-semibold text-orange-900">
-    Pending Check-outs
-  </h2>
+            {/* Pending approvals */}
+            <div className="rounded-2xl border border-orange-200 bg-linear-to-br from-orange-50 to-amber-50 p-6 shadow-sm">
+              <h2 className="text-base font-semibold text-orange-900">
+                Pending Check-ins
+              </h2>
+
+              <div className="mt-4 space-y-3">
+                {pending.length ? (
+                  pending.map((p) => (
+                    <div
+                      key={p.id}
+                      className="rounded-xl border border-slate-200 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">
+                            {p.teacherName || p.teacherId}
+                          </div>
+                          <div className="text-xs text-slate-600">
+                            Date: {p.date} • Requested:{" "}
+                            {p.checkInRequestedAt
+                              ? new Date(
+                                  p.checkInRequestedAt.toMillis(),
+                                ).toLocaleTimeString()
+                              : "—"}
+                          </div>
+                          <div className="text-xs text-slate-600">
+                            Code used: {p.checkInCodeUsed || "—"}
+                            {p.codeExpiredAtRequest ? (
+                              <span className="ml-2 rounded-md bg-amber-50 px-2 py-0.5 text-amber-700">
+                                expired-at-request
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <button
+                            disabled={busy}
+                            onClick={() => handleApprove(p.id)}
+                            className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+                          >
+                            Approve
+                          </button>
+
+                          <button
+                            disabled={busy}
+                            onClick={() => handleReject(p)}
+                            className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-slate-600">
+                    No pending requests.
+                  </div>
+                )}
+              </div>
+
+              {rejecting ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                  <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-lg">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-slate-900">
+                          Reject Check-in
+                        </h3>
+                        <p className="text-sm text-slate-600">
+                          {rejecting.teacherName || rejecting.teacherId} •{" "}
+                          {rejecting.date}
+                        </p>
+                      </div>
+                      <button
+                        className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        onClick={() => setRejecting(null)}
+                        disabled={busy}
+                      >
+                        Close
+                      </button>
+                    </div>
+
+                    <div className="mt-5">
+                      <label className="text-xs font-semibold text-slate-600">
+                        Reason
+                      </label>
+                      <textarea
+                        value={rejectReason}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                        rows={4}
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring"
+                        placeholder="Example: Wrong code / not on premises / contact admin..."
+                      />
+                    </div>
+
+                    <div className="mt-6 flex gap-3">
+                      <button
+                        disabled={busy}
+                        onClick={confirmReject}
+                        className="w-full rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                      >
+                        {busy ? "Rejecting..." : "Confirm Reject"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Pending check-outs */}
+            <div className="rounded-2xl border border-orange-200 bg-linear-to-br from-orange-50 to-amber-50 p-6 shadow-sm">
+              <h2 className="text-base font-semibold text-orange-900">
+                Pending Check-outs
+              </h2>
+
+              <div className="mt-4 space-y-3">
+                {pendingOut.length ? (
+                  pendingOut.map((p) => (
+                    <div
+                      key={p.id}
+                      className="rounded-xl border border-slate-200 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">
+                            {p.teacherName || p.teacherId}
+                          </div>
+
+                          <div className="text-xs text-slate-600">
+                            Date: {p.date} • Requested:{" "}
+                            {p.checkOutRequestedAt
+                              ? new Date(
+                                  p.checkOutRequestedAt.toMillis(),
+                                ).toLocaleTimeString()
+                              : "—"}
+                          </div>
+
+                          <div className="text-xs text-slate-600">
+                            Check-in approved:{" "}
+                            {p.checkInApprovedAt
+                              ? new Date(
+                                  p.checkInApprovedAt.toMillis(),
+                                ).toLocaleTimeString()
+                              : "—"}
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <button
+                            disabled={busy}
+                            onClick={() => handleApproveOut(p.id)}
+                            className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+                          >
+                            Approve
+                          </button>
+
+                          <button
+                            disabled={busy}
+                            onClick={() => handleRejectOut(p)}
+                            className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-slate-600">
+                    No pending check-out requests.
+                  </div>
+                )}
+              </div>
+
+              {/* Reject checkout modal */}
+              {rejectingOut ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                  <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-lg">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-slate-900">
+                          Reject Check-out
+                        </h3>
+                        <p className="text-sm text-slate-600">
+                          {rejectingOut.teacherName || rejectingOut.teacherId} •{" "}
+                          {rejectingOut.date}
+                        </p>
+                      </div>
+
+                      <button
+                        className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        onClick={() => setRejectingOut(null)}
+                        disabled={busy}
+                      >
+                        Close
+                      </button>
+                    </div>
+
+                    <div className="mt-5">
+                      <label className="text-xs font-semibold text-slate-600">
+                        Reason
+                      </label>
+                      <textarea
+                        value={rejectReasonOut}
+                        onChange={(e) => setRejectReasonOut(e.target.value)}
+                        rows={4}
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring"
+                        placeholder="Example: Teacher left early / not on premises / contact admin..."
+                      />
+                    </div>
+
+                    <div className="mt-6 flex gap-3">
+                      <button
+                        disabled={busy}
+                        onClick={confirmRejectOut}
+                        className="w-full rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                      >
+                        {busy ? "Rejecting..." : "Confirm Reject"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            {/* ========== BLOCKED TEACHERS ========== */}
+            <div className="mt-6 rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-semibold text-rose-700">
+                    🚫 Blocked Teachers
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Teachers who missed attendance and did not provide a reason.
+                    Unblock them after reviewing.
+                  </p>
+                </div>
+                <span className="rounded-full bg-rose-100 px-3 py-1 text-sm font-bold text-rose-700">
+                  {blockedTeachers.length}
+                </span>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {blockedTeachers.length ? (
+                  blockedTeachers.map((t) => (
+                    <div
+                      key={t.uid}
+                      className="rounded-xl border border-rose-200 bg-rose-50 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">
+                            {t.fullName || t.email || t.uid}
+                          </div>
+                          <div className="text-xs text-slate-600">
+                            {t.email || ""} {t.contact ? `• ${t.contact}` : ""}
+                          </div>
+                          <div className="mt-1 text-xs text-rose-700">
+                            Reason: {t.blockedReason || "No reason recorded"}
+                          </div>
+                          {t.blockedAt ? (
+                            <div className="text-xs text-slate-500">
+                              Blocked:{" "}
+                              {new Date(
+                                t.blockedAt.toMillis?.() || t.blockedAt,
+                              ).toLocaleString()}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="flex gap-2">
+                          <button
+                            disabled={blockedBusy}
+                            onClick={() => handleViewBlockedTeacher(t)}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                          >
+                            View Reasons
+                          </button>
+                          <button
+                            disabled={blockedBusy}
+                            onClick={() =>
+                              handleUnblockTeacher(t.uid, t.fullName || t.email)
+                            }
+                            className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+                          >
+                            {blockedBusy ? "..." : "Unblock"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-slate-600">
+                    No blocked teachers. All staff are in good standing. ✅
+                  </div>
+                )}
+              </div>
+
+              {/* Blocked teacher detail modal */}
+              {selectedBlockedTeacher ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                  <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-lg max-h-[80vh] overflow-y-auto">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-slate-900">
+                          {selectedBlockedTeacher.fullName ||
+                            selectedBlockedTeacher.email ||
+                            "Teacher"}
+                        </h3>
+                        <p className="text-sm text-slate-600">
+                          Blocked:{" "}
+                          {selectedBlockedTeacher.blockedReason ||
+                            "No reason recorded"}
+                        </p>
+                      </div>
+                      <button
+                        className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        onClick={() => setSelectedBlockedTeacher(null)}
+                        disabled={blockedBusy}
+                      >
+                        Close
+                      </button>
+                    </div>
+
+                    <div className="mt-4">
+                      <h4 className="text-sm font-semibold text-slate-700">
+                        Absence History
+                      </h4>
+                      {blockedBusy ? (
+                        <div className="mt-2 text-sm text-slate-600">
+                          Loading...
+                        </div>
+                      ) : blockedTeacherReasons.length ? (
+                        <div className="mt-2 space-y-2">
+                          {blockedTeacherReasons.map((r) => (
+                            <div
+                              key={r.id}
+                              className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                            >
+                              <div className="flex justify-between text-xs text-slate-600">
+                                <span className="font-semibold">{r.date}</span>
+                                <span
+                                  className={
+                                    r.missedType === "NO_CHECKIN"
+                                      ? "text-rose-600 font-semibold"
+                                      : "text-amber-600 font-semibold"
+                                  }
+                                >
+                                  {r.missedType === "NO_CHECKIN"
+                                    ? "Missed Check-in"
+                                    : "Missed Check-out"}
+                                </span>
+                              </div>
+                              <div className="mt-1 text-sm text-slate-900">
+                                {r.reason}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-sm text-slate-600">
+                          No absence reasons submitted by this teacher.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-6 flex gap-3">
+                      <button
+                        disabled={blockedBusy}
+                        onClick={() =>
+                          handleUnblockTeacher(
+                            selectedBlockedTeacher.uid,
+                            selectedBlockedTeacher.fullName ||
+                              selectedBlockedTeacher.email,
+                          )
+                        }
+                        className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+                      >
+                        {blockedBusy ? "Unblocking..." : "Unblock Teacher"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+         {/* ========== PENDING LEAVE REQUESTS ========== */}
+<div className="mt-6 rounded-2xl border border-orange-200 bg-white p-6 shadow-sm">
+  <div className="flex items-center justify-between gap-4">
+    <div>
+      <h2 className="text-base font-semibold text-orange-700">
+        🏖️ Pending Leave Requests
+      </h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Teachers requesting time off. Approve or reject each request.
+      </p>
+    </div>
+
+    <span className="rounded-full bg-orange-100 px-3 py-1 text-sm font-bold text-orange-700">
+      {pendingLeaves.length}
+    </span>
+  </div>
 
   <div className="mt-4 space-y-3">
-    {pendingOut.length ? (
-      pendingOut.map((p) => (
-        <div
-          key={p.id}
-          className="rounded-xl border border-slate-200 p-4"
-        >
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-sm font-semibold text-slate-900">
-                {p.teacherName || p.teacherId}
+    {pendingLeaves.length ? (
+      pendingLeaves.map((lv) => {
+        const teacher = teachers.find((t) => t.id === lv.teacherId);
+        const isRejecting = leaveRejectingId === lv.id;
+        const isBusy = leaveBusyId === lv.id;
+
+        const handleApproveLeave = async () => {
+          setLeaveBusyId(lv.id);
+          try {
+            await approveLeaveRequest(lv.id, user?.uid, "");
+
+            logAudit({
+              action: AUDIT_ACTIONS.LEAVE_APPROVED,
+              actorId: user?.uid,
+              actorName: user?.displayName || user?.email,
+              targetId: lv.id,
+              targetName: lv.teacherName || teacher?.fullName || "",
+              details: `${lv.leaveType} leave approved (${lv.startDate} to ${lv.endDate})`,
+            });
+
+            toast.success("Leave approved ✅");
+            setPendingLeaves((prev) => prev.filter((x) => x.id !== lv.id));
+
+            if (leaveRejectingId === lv.id) {
+              setLeaveRejectingId(null);
+              setLeaveRejectReason("");
+            }
+          } catch (e) {
+            toast.error(e?.message || "Failed to approve");
+          } finally {
+            setLeaveBusyId(null);
+          }
+        };
+
+        const handleConfirmRejectLeave = async () => {
+          const reason = leaveRejectReason.trim();
+
+          if (!reason) {
+            toast.error("Please provide a reason for rejection.");
+            return;
+          }
+
+          setLeaveBusyId(lv.id);
+          try {
+            await rejectLeaveRequest(lv.id, user?.uid, reason);
+
+            logAudit({
+              action: AUDIT_ACTIONS.LEAVE_REJECTED,
+              actorId: user?.uid,
+              actorName: user?.displayName || user?.email,
+              targetId: lv.id,
+              targetName: lv.teacherName || teacher?.fullName || "",
+              details: `${lv.leaveType} leave rejected. ${reason}`,
+            });
+
+            toast.success("Leave rejected");
+            setPendingLeaves((prev) => prev.filter((x) => x.id !== lv.id));
+            setLeaveRejectingId(null);
+            setLeaveRejectReason("");
+          } catch (e) {
+            toast.error(e?.message || "Failed to reject");
+          } finally {
+            setLeaveBusyId(null);
+          }
+        };
+
+        return (
+          <div
+            key={lv.id}
+            className="rounded-xl border border-orange-200 bg-orange-50 p-4"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-slate-900">
+                  {teacher?.fullName ||
+                    lv.teacherName ||
+                    lv.teacherId?.slice(0, 8) ||
+                    "—"}
+                </div>
+
+                <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-600">
+                  <span className="inline-flex items-center rounded-full border border-orange-300 bg-white px-2 py-0.5 font-semibold text-orange-700">
+                    {lv.leaveType || "—"}
+                  </span>
+                  <span>
+                    {lv.startDate} → {lv.endDate}
+                  </span>
+                </div>
+
+                {lv.reason ? (
+                  <div className="mt-2 text-sm italic text-slate-700">
+                    "{lv.reason}"
+                  </div>
+                ) : null}
+
+                {lv.createdAt ? (
+                  <div className="mt-1 text-xs text-slate-400">
+                    Submitted:{" "}
+                    {new Date(
+                      lv.createdAt.toMillis?.() || lv.createdAt
+                    ).toLocaleString()}
+                  </div>
+                ) : null}
               </div>
 
-              <div className="text-xs text-slate-600">
-                Date: {p.date} • Requested:{" "}
-                {p.checkOutRequestedAt
-                  ? new Date(p.checkOutRequestedAt.toMillis()).toLocaleTimeString()
-                  : "—"}
+              <div className="flex flex-col gap-2">
+                <button
+                  disabled={!!leaveBusyId}
+                  onClick={handleApproveLeave}
+                  className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+                >
+                  {isBusy ? "Approving..." : "Approve"}
+                </button>
+
+                {isRejecting ? (
+                  <div className="flex flex-col gap-1">
+                    <input
+                      type="text"
+                      placeholder="Reason for rejection"
+                      value={leaveRejectReason}
+                      onChange={(e) => setLeaveRejectReason(e.target.value)}
+                      disabled={!!leaveBusyId}
+                      className="rounded-lg border border-slate-200 px-2 py-1 text-xs disabled:bg-slate-100"
+                    />
+
+                    <div className="flex gap-2">
+                      <button
+                        disabled={!!leaveBusyId}
+                        onClick={handleConfirmRejectLeave}
+                        className="rounded-xl bg-rose-600 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                      >
+                        {isBusy ? "Rejecting..." : "Confirm Reject"}
+                      </button>
+
+                      <button
+                        disabled={!!leaveBusyId}
+                        onClick={() => {
+                          setLeaveRejectingId(null);
+                          setLeaveRejectReason("");
+                        }}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    disabled={!!leaveBusyId}
+                    onClick={() => {
+                      setLeaveRejectingId(lv.id);
+                      setLeaveRejectReason("");
+                    }}
+                    className="rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+                  >
+                    Reject
+                  </button>
+                )}
               </div>
-
-              <div className="text-xs text-slate-600">
-                Check-in approved:{" "}
-                {p.checkInApprovedAt
-                  ? new Date(p.checkInApprovedAt.toMillis()).toLocaleTimeString()
-                  : "—"}
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                disabled={busy}
-                onClick={() => handleApproveOut(p.id)}
-                className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
-              >
-                Approve
-              </button>
-
-              <button
-                disabled={busy}
-                onClick={() => handleRejectOut(p)}
-                className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
-              >
-                Reject
-              </button>
             </div>
           </div>
-        </div>
-      ))
+        );
+      })
     ) : (
       <div className="text-sm text-slate-600">
-        No pending check-out requests.
+        No pending leave requests. 🎉
       </div>
     )}
   </div>
-
-  {/* Reject checkout modal */}
-  {rejectingOut ? (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-lg">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-semibold text-slate-900">
-              Reject Check-out
-            </h3>
-            <p className="text-sm text-slate-600">
-              {rejectingOut.teacherName || rejectingOut.teacherId} •{" "}
-              {rejectingOut.date}
-            </p>
-          </div>
-
-          <button
-            className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-            onClick={() => setRejectingOut(null)}
-            disabled={busy}
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="mt-5">
-          <label className="text-xs font-semibold text-slate-600">
-            Reason
-          </label>
-          <textarea
-            value={rejectReasonOut}
-            onChange={(e) => setRejectReasonOut(e.target.value)}
-            rows={4}
-            className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring"
-            placeholder="Example: Teacher left early / not on premises / contact admin..."
-          />
-        </div>
-
-        <div className="mt-6 flex gap-3">
-          <button
-            disabled={busy}
-            onClick={confirmRejectOut}
-            className="w-full rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
-          >
-            {busy ? "Rejecting..." : "Confirm Reject"}
-          </button>
-        </div>
-      </div>
-    </div>
-  ) : null}
 </div>
 
-          {/* ========== BLOCKED TEACHERS ========== */}
-          <div className="mt-6 rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h2 className="text-base font-semibold text-rose-700">
-                  🚫 Blocked Teachers
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Teachers who missed attendance and did not provide a reason. Unblock them after reviewing.
-                </p>
-              </div>
-              <span className="rounded-full bg-rose-100 px-3 py-1 text-sm font-bold text-rose-700">
-                {blockedTeachers.length}
-              </span>
-            </div>
+            {/* ========== RECENT ABSENCE REASONS ========== */}
+            <div className="mt-6 rounded-2xl border border-amber-200 bg-white p-6 shadow-sm">
+              <h2 className="text-base font-semibold text-amber-700">
+                📋 Recent Absence Reasons
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Reasons submitted by teachers for missed check-ins or
+                check-outs.
+              </p>
 
-            <div className="mt-4 space-y-3">
-              {blockedTeachers.length ? (
-                blockedTeachers.map((t) => (
-                  <div
-                    key={t.uid}
-                    className="rounded-xl border border-rose-200 bg-rose-50 p-4"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-semibold text-slate-900">
-                          {t.fullName || t.email || t.uid}
-                        </div>
-                        <div className="text-xs text-slate-600">
-                          {t.email || ""} {t.contact ? `• ${t.contact}` : ""}
-                        </div>
-                        <div className="mt-1 text-xs text-rose-700">
-                          Reason: {t.blockedReason || "No reason recorded"}
-                        </div>
-                        {t.blockedAt ? (
-                          <div className="text-xs text-slate-500">
-                            Blocked: {new Date(t.blockedAt.toMillis?.() || t.blockedAt).toLocaleString()}
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div className="flex gap-2">
-                        <button
-                          disabled={blockedBusy}
-                          onClick={() => handleViewBlockedTeacher(t)}
-                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                        >
-                          View Reasons
-                        </button>
-                        <button
-                          disabled={blockedBusy}
-                          onClick={() => handleUnblockTeacher(t.uid, t.fullName || t.email)}
-                          className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
-                        >
-                          {blockedBusy ? "..." : "Unblock"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-sm text-slate-600">
-                  No blocked teachers. All staff are in good standing. ✅
+              <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+                <div className="grid grid-cols-5 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+                  <div>Date</div>
+                  <div>Teacher</div>
+                  <div>Type</div>
+                  <div className="col-span-2">Reason</div>
                 </div>
-              )}
-            </div>
 
-            {/* Blocked teacher detail modal */}
-            {selectedBlockedTeacher ? (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-                <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-lg max-h-[80vh] overflow-y-auto">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <h3 className="text-lg font-semibold text-slate-900">
-                        {selectedBlockedTeacher.fullName || selectedBlockedTeacher.email || "Teacher"}
-                      </h3>
-                      <p className="text-sm text-slate-600">
-                        Blocked: {selectedBlockedTeacher.blockedReason || "No reason recorded"}
-                      </p>
-                    </div>
-                    <button
-                      className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                      onClick={() => setSelectedBlockedTeacher(null)}
-                      disabled={blockedBusy}
-                    >
-                      Close
-                    </button>
-                  </div>
-
-                  <div className="mt-4">
-                    <h4 className="text-sm font-semibold text-slate-700">Absence History</h4>
-                    {blockedBusy ? (
-                      <div className="mt-2 text-sm text-slate-600">Loading...</div>
-                    ) : blockedTeacherReasons.length ? (
-                      <div className="mt-2 space-y-2">
-                        {blockedTeacherReasons.map((r) => (
-                          <div key={r.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                            <div className="flex justify-between text-xs text-slate-600">
-                              <span className="font-semibold">{r.date}</span>
-                              <span className={
-                                r.missedType === "NO_CHECKIN"
-                                  ? "text-rose-600 font-semibold"
-                                  : "text-amber-600 font-semibold"
-                              }>
-                                {r.missedType === "NO_CHECKIN" ? "Missed Check-in" : "Missed Check-out"}
-                              </span>
-                            </div>
-                            <div className="mt-1 text-sm text-slate-900">{r.reason}</div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="mt-2 text-sm text-slate-600">
-                        No absence reasons submitted by this teacher.
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="mt-6 flex gap-3">
-                    <button
-                      disabled={blockedBusy}
-                      onClick={() => handleUnblockTeacher(selectedBlockedTeacher.uid, selectedBlockedTeacher.fullName || selectedBlockedTeacher.email)}
-                      className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
-                    >
-                      {blockedBusy ? "Unblocking..." : "Unblock Teacher"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          {/* ========== PENDING LEAVE REQUESTS ========== */}
-          <div className="mt-6 rounded-2xl border border-orange-200 bg-white p-6 shadow-sm">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h2 className="text-base font-semibold text-orange-700">
-                  🏖️ Pending Leave Requests
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Teachers requesting time off. Approve or reject each request.
-                </p>
-              </div>
-              <span className="rounded-full bg-orange-100 px-3 py-1 text-sm font-bold text-orange-700">
-                {pendingLeaves.length}
-              </span>
-            </div>
-
-            <div className="mt-4 space-y-3">
-              {pendingLeaves.length ? (
-                pendingLeaves.map((lv) => {
-                  const teacher = teachers.find((t) => t.id === lv.teacherId);
-                  return (
-                    <div
-                      key={lv.id}
-                      className="rounded-xl border border-orange-200 bg-orange-50 p-4"
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-semibold text-slate-900">
-                            {teacher?.fullName || lv.teacherName || lv.teacherId?.slice(0, 8) || "—"}
-                          </div>
-                          <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-600">
-                            <span className="inline-flex items-center rounded-full border border-orange-300 bg-white px-2 py-0.5 font-semibold text-orange-700">
-                              {lv.leaveType || "—"}
-                            </span>
-                            <span>
-                              {lv.startDate} → {lv.endDate}
-                            </span>
-                          </div>
-                          {lv.reason ? (
-                            <div className="mt-2 text-sm text-slate-700 italic">
-                              "{lv.reason}"
-                            </div>
-                          ) : null}
-                          {lv.createdAt ? (
-                            <div className="mt-1 text-xs text-slate-400">
-                              Submitted: {new Date(lv.createdAt.toMillis?.() || lv.createdAt).toLocaleString()}
-                            </div>
-                          ) : null}
+                {recentAbsenceReasons.length ? (
+                  recentAbsenceReasons.map((r) => {
+                    const teacher = teachers.find((t) => t.id === r.teacherId);
+                    return (
+                      <div
+                        key={r.id}
+                        className="grid grid-cols-5 items-center border-t border-slate-200 px-4 py-3 text-sm"
+                      >
+                        <div className="text-slate-700">{r.date || "—"}</div>
+                        <div className="text-slate-900 font-semibold truncate">
+                          {teacher?.fullName || r.teacherId?.slice(0, 8) || "—"}
                         </div>
-
-                        <div className="flex flex-col gap-2">
-                          <button
-                            disabled={leaveBusy}
-                            onClick={async () => {
-                              setLeaveBusy(true);
-                              try {
-                                await approveLeaveRequest(lv.id);
-                                logAudit({ action: AUDIT_ACTIONS.LEAVE_APPROVED, actorId: user?.uid, actorName: user?.displayName || user?.email, targetId: lv.id, targetName: lv.teacherName || "", details: `${lv.leaveType} leave approved (${lv.startDate} to ${lv.endDate})` });
-                                toast.success("Leave approved ✅");
-                                setPendingLeaves((prev) => prev.filter((x) => x.id !== lv.id));
-                              } catch (e) {
-                                toast.error(e.message || "Failed to approve");
-                              }
-                              setLeaveBusy(false);
-                            }}
-                            className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+                        <div>
+                          <span
+                            className={[
+                              "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
+                              r.missedType === "NO_CHECKIN"
+                                ? "bg-rose-50 text-rose-700 border-rose-200"
+                                : "bg-amber-50 text-amber-700 border-amber-200",
+                            ].join(" ")}
                           >
-                            {leaveBusy ? "..." : "Approve"}
-                          </button>
-                          {leaveRejectingId === lv.id ? (
-                            <div className="flex flex-col gap-1">
-                              <input
-                                type="text"
-                                placeholder="Reason (optional)"
-                                value={leaveRejectReason}
-                                onChange={(e) => setLeaveRejectReason(e.target.value)}
-                                className="rounded-lg border border-slate-200 px-2 py-1 text-xs"
-                              />
-                              <button
-                                disabled={leaveBusy}
-                                onClick={async () => {
-                                  setLeaveBusy(true);
-                                  try {
-                                    await rejectLeaveRequest(lv.id, leaveRejectReason.trim() || undefined);
-                                    logAudit({ action: AUDIT_ACTIONS.LEAVE_REJECTED, actorId: user?.uid, actorName: user?.displayName || user?.email, targetId: lv.id, targetName: lv.teacherName || "", details: `${lv.leaveType} leave rejected. ${leaveRejectReason.trim() || ""}` });
-                                    toast.success("Leave rejected");
-                                    setPendingLeaves((prev) => prev.filter((x) => x.id !== lv.id));
-                                    setLeaveRejectingId(null);
-                                    setLeaveRejectReason("");
-                                  } catch (e) {
-                                    toast.error(e.message || "Failed to reject");
-                                  }
-                                  setLeaveBusy(false);
-                                }}
-                                className="rounded-xl bg-rose-600 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
-                              >
-                                {leaveBusy ? "..." : "Confirm Reject"}
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              disabled={leaveBusy}
-                              onClick={() => { setLeaveRejectingId(lv.id); setLeaveRejectReason(""); }}
-                              className="rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60"
-                            >
-                              Reject
-                            </button>
-                          )}
+                            {r.missedType === "NO_CHECKIN"
+                              ? "No Check-in"
+                              : "No Check-out"}
+                          </span>
+                        </div>
+                        <div className="col-span-2 text-slate-700 truncate">
+                          {r.reason || "—"}
                         </div>
                       </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="text-sm text-slate-600">
-                  No pending leave requests. 🎉
-                </div>
-              )}
+                    );
+                  })
+                ) : (
+                  <div className="px-4 py-6 text-sm text-slate-600">
+                    No absence reasons submitted yet.
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
 
-          {/* ========== RECENT ABSENCE REASONS ========== */}
-          <div className="mt-6 rounded-2xl border border-amber-200 bg-white p-6 shadow-sm">
-            <h2 className="text-base font-semibold text-amber-700">
-              📋 Recent Absence Reasons
-            </h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Reasons submitted by teachers for missed check-ins or check-outs.
-            </p>
+            {/* Analytics: Today Overview */}
+            <div className="mt-6 rounded-2xl border border-indigo-200 bg-linear-to-br from-indigo-50 to-purple-50 p-6 shadow-sm">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-semibold text-indigo-900">
+                    Today Overview
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Summary of today’s teacher check-ins, student attendance
+                    submissions, and finance totals.
+                  </p>
+                </div>
 
-            <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-              <div className="grid grid-cols-5 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
-                <div>Date</div>
-                <div>Teacher</div>
-                <div>Type</div>
-                <div className="col-span-2">Reason</div>
+                <button
+                  disabled={busy}
+                  onClick={async () => {
+                    toast.dismiss();
+                    try {
+                      const ov = await getAdminTodayOverview();
+                      setTodayOverview(ov);
+                      toast.success("Today overview refreshed.");
+                    } catch (e) {
+                      toast.error(e?.message || "Failed to refresh overview.");
+                    }
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                >
+                  Refresh
+                </button>
               </div>
 
-              {recentAbsenceReasons.length ? (
-                recentAbsenceReasons.map((r) => {
-                  const teacher = teachers.find((t) => t.id === r.teacherId);
-                  return (
-                    <div
-                      key={r.id}
-                      className="grid grid-cols-5 items-center border-t border-slate-200 px-4 py-3 text-sm"
+              <div className="mt-5 grid gap-4 md:grid-cols-4">
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+                  <div className="text-xs font-semibold text-indigo-600">
+                    Teachers Approved
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {todayOverview?.teacherCheckins?.approved ?? "—"}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Pending: {todayOverview?.teacherCheckins?.pending ?? "—"} •
+                    Rejected: {todayOverview?.teacherCheckins?.rejected ?? "—"}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                  <div className="text-xs font-semibold text-emerald-600">
+                    Student Attendance
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {todayOverview?.studentAttendance?.submittedClasses ?? "—"}{" "}
+                    / {todayOverview?.studentAttendance?.totalClasses ?? "—"}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Submitted classes / Total classes
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <div className="text-xs font-semibold text-amber-600">
+                    Today Receipts
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {todayOverview?.fees?.receiptsCount ?? "—"}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Total: {todayOverview?.fees?.currency ?? "GHS"}{" "}
+                    {todayOverview?.fees?.amountTotal ?? "—"}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-purple-200 bg-purple-50 px-4 py-3">
+                  <div className="text-xs font-semibold text-purple-600">
+                    Bursary Payments
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {todayOverview?.bursary?.paymentsCount ?? "—"}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Grand: {todayOverview?.bursary?.currency ?? "GHS"}{" "}
+                    {todayOverview?.bursary?.grandTotal ?? "—"}
+                  </div>
+                </div>
+              </div>
+
+              {todayOverview?.flags?.lateTeachersCount != null ? (
+                <div className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+                  Late teachers today:{" "}
+                  <span className="font-semibold text-slate-900">
+                    {todayOverview.flags.lateTeachersCount}
+                  </span>
+                  {todayOverview.flags.codeExpiredAtRequestCount != null ? (
+                    <>
+                      {" "}
+                      • Code expired-at-request:{" "}
+                      <span className="font-semibold text-slate-900">
+                        {todayOverview.flags.codeExpiredAtRequestCount}
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            {/* Analytics: Trends */}
+            <div className="mt-6 rounded-2xl border border-indigo-200 bg-linear-to-br from-blue-50 to-indigo-50 p-6 shadow-sm">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h2 className="text-base font-semibold text-indigo-900">
+                    Daily Trends
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Track daily activity across attendance and finance. Use this
+                    to spot drop-offs and peak days.
+                  </p>
+                </div>
+
+                <button
+                  disabled={busy || !trendFrom || !trendTo}
+                  onClick={loadTrends}
+                  className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
+                >
+                  Load Trends
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-4">
+                <div>
+                  <label className="text-xs font-semibold text-slate-600">
+                    From
+                  </label>
+                  <input
+                    type="date"
+                    value={trendFrom}
+                    onChange={(e) => setTrendFrom(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-600">
+                    To
+                  </label>
+                  <input
+                    type="date"
+                    value={trendTo}
+                    onChange={(e) => setTrendTo(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                  />
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-xs font-semibold text-slate-600">
+                    Days
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {trends?.rows?.length ?? "—"}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-xs font-semibold text-slate-600">
+                    Teacher approvals (sum)
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {trends?.totals?.teacherApproved ?? "—"}
+                  </div>
+                </div>
+              </div>
+
+              {/* ═══ Trends Chart ═══ */}
+              {trends?.rows?.length > 0 && (
+                <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
+                  <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">
+                    Attendance & Finance Trend
+                  </h3>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart
+                      data={trends.rows}
+                      margin={{ top: 5, right: 10, left: 0, bottom: 5 }}
                     >
-                      <div className="text-slate-700">{r.date || "—"}</div>
-                      <div className="text-slate-900 font-semibold truncate">
-                        {teacher?.fullName || r.teacherId?.slice(0, 8) || "—"}
-                      </div>
-                      <div>
-                        <span className={[
-                          "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
-                          r.missedType === "NO_CHECKIN"
-                            ? "bg-rose-50 text-rose-700 border-rose-200"
-                            : "bg-amber-50 text-amber-700 border-amber-200",
-                        ].join(" ")}>
-                          {r.missedType === "NO_CHECKIN" ? "No Check-in" : "No Check-out"}
-                        </span>
-                      </div>
-                      <div className="col-span-2 text-slate-700 truncate">
-                        {r.reason || "—"}
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="px-4 py-6 text-sm text-slate-600">
-                  No absence reasons submitted yet.
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis
+                        dataKey="date"
+                        tick={{ fontSize: 10 }}
+                        tickFormatter={(v) => v?.slice(5) || v}
+                      />
+                      <YAxis tick={{ fontSize: 10 }} />
+                      <Tooltip
+                        contentStyle={{ fontSize: 12, borderRadius: 12 }}
+                        labelFormatter={(v) => `Date: ${v}`}
+                      />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar
+                        dataKey="teacherApproved"
+                        name="Teachers Approved"
+                        fill="#6366f1"
+                        radius={[4, 4, 0, 0]}
+                      />
+                      <Bar
+                        dataKey="studentSubmittedClasses"
+                        name="Classes Submitted"
+                        fill="#10b981"
+                        radius={[4, 4, 0, 0]}
+                      />
+                      <Bar
+                        dataKey="feesTotal"
+                        name="Fees (GHS)"
+                        fill="#f59e0b"
+                        radius={[4, 4, 0, 0]}
+                      />
+                      <Bar
+                        dataKey="bursaryGrand"
+                        name="Bursary (GHS)"
+                        fill="#a855f7"
+                        radius={[4, 4, 0, 0]}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               )}
+
+              <div className="mt-5 overflow-hidden rounded-xl border border-slate-200">
+                <div className="grid grid-cols-7 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+                  <div>Date</div>
+                  <div className="text-center">Teachers Approved</div>
+                  <div className="text-center">Teachers Pending</div>
+                  <div className="text-center">Student Classes Submitted</div>
+                  <div className="text-right">Fees (GHS)</div>
+                  <div className="text-right">Bursary (GHS)</div>
+                  <div className="text-right">Grand (GHS)</div>
+                </div>
+
+                {trends?.rows?.length ? (
+                  <div className="max-h-96 overflow-auto bg-white">
+                    {trends.rows.map((r) => (
+                      <div
+                        key={r.date}
+                        className="grid grid-cols-7 items-center border-t border-slate-200 px-4 py-3 text-sm"
+                      >
+                        <div className="font-semibold text-slate-900">
+                          {r.date}
+                        </div>
+                        <div className="text-center text-slate-700">
+                          {r.teacherApproved ?? 0}
+                        </div>
+                        <div className="text-center text-slate-700">
+                          {r.teacherPending ?? 0}
+                        </div>
+                        <div className="text-center text-slate-700">
+                          {r.studentSubmittedClasses ?? 0}
+                        </div>
+                        <div className="text-right text-slate-700">
+                          {r.feesTotal ?? 0}
+                        </div>
+                        <div className="text-right text-slate-700">
+                          {r.bursaryGrand ?? 0}
+                        </div>
+                        <div className="text-right font-semibold text-slate-900">
+                          {Number(r.feesTotal ?? 0) +
+                            Number(r.bursaryGrand ?? 0) || 0}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="px-4 py-6 text-sm text-slate-600">
+                    No trends loaded. Select a date range and click “Load
+                    Trends”.
+                  </div>
+                )}
+              </div>
             </div>
           </div>
+        </div>
 
-
-          {/* Analytics: Today Overview */}
-          <div className="mt-6 rounded-2xl border border-indigo-200 bg-linear-to-br from-indigo-50 to-purple-50 p-6 shadow-sm">
-            <div className="flex items-center justify-between gap-4">
+        {/* ═══ TAB: Finance ═══ */}
+        <div className={activeTab !== "finance" ? "hidden" : ""}>
+          {/* School Fees Receipts */}
+          <div className="mt-6 rounded-2xl border border-amber-200 bg-linear-to-br from-amber-50 to-orange-50 p-6 shadow-sm border-l-4 border-l-amber-400">
+            <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-base font-semibold text-indigo-900">
-                  Today Overview
+                <h2 className="text-base font-semibold text-amber-900">
+                  School Fees Receipts
                 </h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Summary of today’s teacher check-ins, student attendance
-                  submissions, and finance totals.
+                  Issues receipt numbers per-day and per-term. Admin only.
                 </p>
               </div>
-
               <button
-                disabled={busy}
-                onClick={async () => {
-                  toast.dismiss();
-                  try {
-                    const ov = await getAdminTodayOverview();
-                    setTodayOverview(ov);
-                    toast.success("Today overview refreshed.");
-                  } catch (e) {
-                    toast.error(e?.message || "Failed to refresh overview.");
-                  }
-                }}
+                disabled={receiptBusy}
+                onClick={loadTodayReceipts}
                 className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
               >
                 Refresh
               </button>
             </div>
 
-            <div className="mt-5 grid gap-4 md:grid-cols-4">
-              <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
-                <div className="text-xs font-semibold text-indigo-600">
-                  Teachers Approved
-                </div>
-                <div className="mt-1 text-lg font-semibold text-slate-900">
-                  {todayOverview?.teacherCheckins?.approved ?? "—"}
-                </div>
-                <div className="mt-1 text-xs text-slate-500">
-                  Pending: {todayOverview?.teacherCheckins?.pending ?? "—"} •
-                  Rejected: {todayOverview?.teacherCheckins?.rejected ?? "—"}
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 p-5">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Create Receipt
+                </h3>
+
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Class
+                    </label>
+                    <select
+                      value={selectedClassId}
+                      onChange={(e) => setSelectedClassId(e.target.value)}
+                      disabled={receiptBusy || !classes.length}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                    >
+                      {!classes.length ? (
+                        <option value="">No classes yet</option>
+                      ) : null}
+                      {classes.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} — {c.teacherName || c.teacherUid}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600">
+                        Student (from roster)
+                      </label>
+                      <select
+                        value={receiptStudentId}
+                        onChange={(e) => setReceiptStudentId(e.target.value)}
+                        disabled={receiptBusy || !selectedClassId}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                      >
+                        <option value="">Select student</option>
+                        {students.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.fullName || s.id}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600">
+                        Or type student name
+                      </label>
+                      <input
+                        value={receiptStudentName}
+                        onChange={(e) => setReceiptStudentName(e.target.value)}
+                        placeholder="e.g. Ama Mensah"
+                        disabled={receiptBusy}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="md:col-span-1">
+                      <label className="text-xs font-semibold text-slate-600">
+                        Amount ({school?.currency || "GHS"})
+                      </label>
+                      <input
+                        type="number"
+                        value={receiptAmount}
+                        onChange={(e) => setReceiptAmount(e.target.value)}
+                        placeholder="e.g. 250"
+                        disabled={receiptBusy}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                      />
+                    </div>
+
+                    <div className="md:col-span-1">
+                      <label className="text-xs font-semibold text-slate-600">
+                        Payment method
+                      </label>
+                      <select
+                        value={receiptMethod}
+                        onChange={(e) => setReceiptMethod(e.target.value)}
+                        disabled={receiptBusy}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                      >
+                        <option value="CASH">Cash</option>
+                        <option value="MOMO">MoMo</option>
+                        <option value="BANK">Bank</option>
+                      </select>
+                    </div>
+
+                    <div className="md:col-span-1">
+                      <label className="text-xs font-semibold text-slate-600">
+                        Reference (optional)
+                      </label>
+                      <input
+                        value={receiptRef}
+                        onChange={(e) => setReceiptRef(e.target.value)}
+                        placeholder="MoMo ref / teller"
+                        disabled={receiptBusy}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    disabled={receiptBusy}
+                    onClick={handleCreateReceipt}
+                    className="w-full rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
+                  >
+                    {receiptBusy ? "Issuing..." : "Issue Receipt & Print"}
+                  </button>
+
+                  {lastReceipt ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+                      <div className="font-semibold text-slate-900">
+                        Last receipt
+                      </div>
+                      <div className="text-xs text-slate-600 mt-1">
+                        Daily:{" "}
+                        <span className="font-semibold">
+                          {lastReceipt.dailyNo}
+                        </span>{" "}
+                        • Term:{" "}
+                        <span className="font-semibold">
+                          {lastReceipt.termNo}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => printReceipt(lastReceipt)}
+                        className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                      >
+                        Print again
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-                <div className="text-xs font-semibold text-emerald-600">
-                  Student Attendance
-                </div>
-                <div className="mt-1 text-lg font-semibold text-slate-900">
-                  {todayOverview?.studentAttendance?.submittedClasses ?? "—"} /{" "}
-                  {todayOverview?.studentAttendance?.totalClasses ?? "—"}
-                </div>
-                <div className="mt-1 text-xs text-slate-500">
-                  Submitted classes / Total classes
-                </div>
-              </div>
+              <div className="rounded-2xl border border-slate-200 p-5">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Today’s Receipts
+                </h3>
 
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                <div className="text-xs font-semibold text-amber-600">
-                  Today Receipts
-                </div>
-                <div className="mt-1 text-lg font-semibold text-slate-900">
-                  {todayOverview?.fees?.receiptsCount ?? "—"}
-                </div>
-                <div className="mt-1 text-xs text-slate-500">
-                  Total: {todayOverview?.fees?.currency ?? "GHS"}{" "}
-                  {todayOverview?.fees?.amountTotal ?? "—"}
-                </div>
-              </div>
+                <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+                  <div className="grid grid-cols-3 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+                    <div>Receipt</div>
+                    <div>Student</div>
+                    <div className="text-right">Action</div>
+                  </div>
 
-              <div className="rounded-xl border border-purple-200 bg-purple-50 px-4 py-3">
-                <div className="text-xs font-semibold text-purple-600">
-                  Bursary Payments
-                </div>
-                <div className="mt-1 text-lg font-semibold text-slate-900">
-                  {todayOverview?.bursary?.paymentsCount ?? "—"}
-                </div>
-                <div className="mt-1 text-xs text-slate-500">
-                  Grand: {todayOverview?.bursary?.currency ?? "GHS"}{" "}
-                  {todayOverview?.bursary?.grandTotal ?? "—"}
+                  {todayReceipts.length ? (
+                    <div className="max-h-80 overflow-auto bg-white">
+                      {todayReceipts.map((r) => (
+                        <div
+                          key={r.id}
+                          className="grid grid-cols-3 items-center border-t border-slate-200 px-4 py-3 text-sm"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate font-semibold text-slate-900">
+                              {r.dailyNo}
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              {r.termNo}
+                            </div>
+                          </div>
+                          <div className="truncate text-slate-700">
+                            {r.studentName}
+                          </div>
+                          <div className="text-right">
+                            <button
+                              onClick={() => printReceipt(r)}
+                              className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                            >
+                              Print
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="px-4 py-6 text-sm text-slate-600">
+                      No receipts issued today.
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
+          </div>
+        </div>
 
-            {todayOverview?.flags?.lateTeachersCount != null ? (
-              <div className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
-                Late teachers today:{" "}
-                <span className="font-semibold text-slate-900">
-                  {todayOverview.flags.lateTeachersCount}
-                </span>
-                {todayOverview.flags.codeExpiredAtRequestCount != null ? (
-                  <>
-                    {" "}
-                    • Code expired-at-request:{" "}
-                    <span className="font-semibold text-slate-900">
-                      {todayOverview.flags.codeExpiredAtRequestCount}
-                    </span>
-                  </>
-                ) : null}
+        {/* ═══ TAB: Teachers ═══ */}
+        <div className={activeTab !== "teachers" ? "hidden" : ""}>
+          {/* Teachers */}
+          <div className="mt-6 rounded-2xl border border-violet-200 bg-linear-to-br from-violet-50 to-purple-50 p-6 shadow-sm border-l-4 border-l-violet-400">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-violet-900">
+                Teachers
+              </h2>
+              <span className="text-sm text-slate-600">
+                {filteredTeachers.length} shown
+              </span>
+            </div>
+
+            <div className="mt-4 flex gap-3">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name, email, contact, address..."
+                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+              />
+            </div>
+
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-600">
+                    <th className="py-2">Name</th>
+                    <th className="py-2">Email</th>
+                    <th className="py-2">Contact</th>
+                    <th className="py-2">Address</th>
+                    <th className="py-2">Salary</th>
+                    <th className="py-2">History</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredTeachers.length ? (
+                    filteredTeachers.map((t) => (
+                      <tr
+                        key={t.id}
+                        className="border-t border-slate-200 cursor-pointer hover:bg-slate-50"
+                        onClick={() => openTeacher(t)}
+                      >
+                        <td className="py-2 font-semibold text-slate-900">
+                          {t.fullName || "—"}
+                        </td>
+                        <td className="py-2 text-slate-700">
+                          {t.email || "—"}
+                        </td>
+                        <td className="py-2 text-slate-700">
+                          {t.contact || "—"}
+                        </td>
+                        <td className="py-2 text-slate-700">
+                          {t.address || "—"}
+                        </td>
+                        <td className="py-2 text-slate-700">
+                          {t.baseMonthlySalary != null
+                            ? `GHS ${t.baseMonthlySalary}`
+                            : "—"}
+                        </td>
+                        <td className="py-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              loadTeacherHistory(t.id);
+                            }}
+                            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                              teacherHistoryUid === t.id
+                                ? "bg-violet-600 text-white"
+                                : "border border-violet-200 bg-white text-violet-700 hover:bg-violet-50"
+                            }`}
+                          >
+                            {teacherHistoryUid === t.id ? "Hide" : "View"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td className="py-4 text-slate-600" colSpan={6}>
+                        No teachers found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Teacher Attendance History Panel */}
+            {teacherHistoryUid && (
+              <div className="mt-4 rounded-xl border border-violet-200 bg-white p-4">
+                <h3 className="text-sm font-semibold text-violet-800">
+                  Recent Attendance —{" "}
+                  {teachers.find((t) => t.id === teacherHistoryUid)?.fullName ||
+                    "Teacher"}
+                </h3>
+                {historyBusy ? (
+                  <p className="mt-3 text-sm text-slate-600">Loading...</p>
+                ) : teacherHistory.length ? (
+                  <div className="mt-3 max-h-60 overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-slate-50">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-medium text-slate-600">
+                            Date
+                          </th>
+                          <th className="px-3 py-2 text-left font-medium text-slate-600">
+                            Status
+                          </th>
+                          <th className="px-3 py-2 text-left font-medium text-slate-600">
+                            Late?
+                          </th>
+                          <th className="px-3 py-2 text-left font-medium text-slate-600">
+                            Check-in
+                          </th>
+                          <th className="px-3 py-2 text-left font-medium text-slate-600">
+                            Check-out
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {teacherHistory.map((h) => (
+                          <tr key={h.id} className="hover:bg-slate-50">
+                            <td className="px-3 py-2 font-semibold text-slate-900">
+                              {h.date || "—"}
+                            </td>
+                            <td className="px-3 py-2">
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                  h.status === "CHECKED_IN" ||
+                                  h.status === "CHECKED_OUT"
+                                    ? "bg-emerald-100 text-emerald-700"
+                                    : h.status === "PENDING"
+                                      ? "bg-amber-100 text-amber-700"
+                                      : "bg-slate-100 text-slate-600"
+                                }`}
+                              >
+                                {h.status || "—"}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2">
+                              {h.isLate === true ? (
+                                <span className="text-rose-600 font-semibold">
+                                  YES
+                                </span>
+                              ) : h.isLate === false ? (
+                                <span className="text-emerald-600">NO</span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-slate-700">
+                              {h.checkInApprovedAt
+                                ? new Date(
+                                    h.checkInApprovedAt.toDate?.() ??
+                                      h.checkInApprovedAt,
+                                  ).toLocaleTimeString()
+                                : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-slate-700">
+                              {h.checkOutApprovedAt
+                                ? new Date(
+                                    h.checkOutApprovedAt.toDate?.() ??
+                                      h.checkOutApprovedAt,
+                                  ).toLocaleTimeString()
+                                : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-sm text-slate-500">
+                    No attendance records found (last 30 days).
+                  </p>
+                )}
               </div>
-            ) : null}
+            )}
+
+            <p className="mt-2 text-xs text-slate-500">
+              Click a teacher row to view details and update
+              salary/contact/address.
+            </p>
+          </div>
+        </div>
+
+        {/* ═══ TAB: Classes ═══ */}
+        <div className={activeTab !== "classes" ? "hidden" : ""}>
+          {/* Class Setup */}
+          <div className="mt-6 rounded-2xl border border-teal-200 bg-linear-to-br from-teal-50 to-cyan-50 p-6 shadow-sm border-l-4 border-l-teal-400">
+            <h2 className="text-base font-semibold text-teal-900">
+              Class Setup
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Create classes and add students. Teachers already exist as users.
+            </p>
+
+            <div className="mt-5 grid gap-6 md:grid-cols-2">
+              {/* Create class */}
+              <div className="rounded-2xl border border-slate-200 p-5">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Create Class
+                </h3>
+
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Class name
+                    </label>
+                    <input
+                      value={className}
+                      onChange={(e) => setClassName(e.target.value)}
+                      placeholder="e.g. JHS 2A"
+                      disabled={busy}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Assign teacher
+                    </label>
+                    <select
+                      value={classTeacherId}
+                      onChange={(e) => setClassTeacherId(e.target.value)}
+                      disabled={busy}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <option value="">Select teacher</option>
+                      {teachers.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.fullName || t.email || t.id}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <button
+                    disabled={busy}
+                    onClick={handleCreateClass}
+                    className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                  >
+                    {busy ? "Working..." : "Create Class"}
+                  </button>
+
+                  <p className="text-xs text-slate-500">
+                    Each teacher manages exactly one class.
+                  </p>
+                </div>
+              </div>
+
+              {/* Existing Classes List */}
+              <div className="rounded-2xl border border-slate-200 p-5">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Existing Classes
+                </h3>
+                {classes.length ? (
+                  <div className="mt-3 space-y-2">
+                    {classes.map((c) => (
+                      <div
+                        key={c.id}
+                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
+                      >
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">
+                            {c.name}
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            {c.teacherName || c.teacherUid || "No teacher"}
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => openClassEditor(c)}
+                            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            disabled={busy}
+                            onClick={() => handleDeleteClass(c)}
+                            className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-sm text-slate-500">
+                    No classes yet. Create one above.
+                  </p>
+                )}
+              </div>
+
+              {/* Add students */}
+              <div className="rounded-2xl border border-slate-200 p-5">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Add Students
+                </h3>
+
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Select class
+                    </label>
+                    <select
+                      value={selectedClassId}
+                      onChange={(e) => setSelectedClassId(e.target.value)}
+                      disabled={busy || !classes.length}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                    >
+                      {!classes.length ? (
+                        <option value="">No classes yet</option>
+                      ) : null}
+                      {classes.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} — {c.teacherName || c.teacherUid}
+                        </option>
+                      ))}
+                    </select>
+
+                    {selectedClassForRoster ? (
+                      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+                        <div className="font-semibold text-slate-900">
+                          {selectedClassForRoster.name}
+                        </div>
+                        <div className="text-xs text-slate-600">
+                          Teacher:{" "}
+                          <span className="font-semibold text-slate-800">
+                            {selectedClassForRoster.teacherName || "—"}
+                          </span>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Student name
+                    </label>
+                    <input
+                      value={studentName}
+                      onChange={(e) => setStudentName(e.target.value)}
+                      placeholder="e.g. Ama Mensah"
+                      disabled={busy || !selectedClassId}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                    />
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600">
+                        Parent name (optional)
+                      </label>
+                      <input
+                        value={parentName}
+                        onChange={(e) => setParentName(e.target.value)}
+                        placeholder="e.g. Kofi Mensah"
+                        disabled={busy || !selectedClassId}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600">
+                        Parent phone (optional)
+                      </label>
+                      <input
+                        value={parentPhone}
+                        onChange={(e) => setParentPhone(e.target.value)}
+                        placeholder="e.g. +233 24 xxx xxxx"
+                        disabled={busy || !selectedClassId}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    disabled={busy || !selectedClassId}
+                    onClick={handleAddStudent}
+                    className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                  >
+                    {busy ? "Working..." : "Add Student"}
+                  </button>
+
+                  {/* Roster */}
+                  <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+                    <div className="flex items-center justify-between bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+                      <div>Roster</div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={loadStudentRates}
+                          disabled={ratesBusy || !students.length}
+                          className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+                        >
+                          {ratesBusy ? "Loading…" : "📊 Load Attendance %"}
+                        </button>
+                        <div>{students.length} students</div>
+                      </div>
+                    </div>
+
+                    {students.length ? (
+                      <div className="max-h-80 overflow-auto">
+                        {students.map((s) => {
+                          const rateInfo = studentRates.get(s.id);
+                          return (
+                            <div
+                              key={s.id}
+                              className="flex items-start justify-between gap-3 border-t border-slate-200 px-4 py-3 text-sm"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 truncate">
+                                  <span className="font-semibold text-slate-900">
+                                    {s.fullName || "—"}
+                                  </span>
+                                  {rateInfo && (
+                                    <span
+                                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                        rateInfo.rate >= 90
+                                          ? "bg-emerald-100 text-emerald-700"
+                                          : rateInfo.rate >= 75
+                                            ? "bg-amber-100 text-amber-700"
+                                            : "bg-red-100 text-red-700"
+                                      }`}
+                                      title={`${rateInfo.present}/${rateInfo.total} days present (last 30 days)`}
+                                    >
+                                      {rateInfo.rate}%
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-slate-500">
+                                  {s.status || "ACTIVE"}
+                                  {rateInfo && (
+                                    <span className="ml-2 text-slate-400">
+                                      · {rateInfo.present}P / {rateInfo.absent}A
+                                      in {rateInfo.total} days
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-700">
+                                  <label className="flex items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={s.feeExempt === true}
+                                      disabled={busy}
+                                      onChange={(e) =>
+                                        updateStudentExemption(s.id, {
+                                          feeExempt: e.target.checked,
+                                        })
+                                      }
+                                    />
+                                    Fees exempt
+                                  </label>
+
+                                  <label className="flex items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={
+                                        s.healthMaintenanceExempt === true
+                                      }
+                                      disabled={busy}
+                                      onChange={(e) =>
+                                        updateStudentExemption(s.id, {
+                                          healthMaintenanceExempt:
+                                            e.target.checked,
+                                        })
+                                      }
+                                    />
+                                    Health &amp; Maintenance exempt
+                                  </label>
+                                  <label className="flex items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={s.feedingExempt === true}
+                                      disabled={busy}
+                                      onChange={(e) =>
+                                        updateStudentExemption(s.id, {
+                                          feedingExempt: e.target.checked,
+                                        })
+                                      }
+                                    />
+                                    Feeding exempt
+                                  </label>
+                                </div>
+                              </div>
+
+                              <div className="flex shrink-0 gap-2">
+                                <button
+                                  onClick={() => openStudentEditor(s)}
+                                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-teal-700 hover:bg-teal-50"
+                                  title="Edit student name"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  disabled={busy}
+                                  onClick={() =>
+                                    handleRemoveStudent(s.id, s.fullName)
+                                  }
+                                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
+                                  title="Remove student"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="px-4 py-6 text-sm text-slate-600">
+                        {selectedClassId
+                          ? "No students added to this class yet."
+                          : "Select a class to view students."}
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="text-xs text-slate-500">
+                    Add students one-by-one here. If you want bulk upload
+                    (Excel), we can add that next.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
 
-          {/* Analytics: Trends */}
-          <div className="mt-6 rounded-2xl border border-indigo-200 bg-linear-to-br from-blue-50 to-indigo-50 p-6 shadow-sm">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          {/* Class Edit Modal */}
+          {editingClass && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-lg">
+                <h3 className="text-lg font-semibold text-slate-900">
+                  Edit Class
+                </h3>
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Class name
+                    </label>
+                    <input
+                      value={editClassName}
+                      onChange={(e) => setEditClassName(e.target.value)}
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Assign teacher
+                    </label>
+                    <select
+                      value={editClassTeacherId}
+                      onChange={(e) => setEditClassTeacherId(e.target.value)}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                    >
+                      <option value="">Select teacher</option>
+                      {teachers.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.fullName || t.email || t.id}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="mt-6 flex gap-3">
+                  <button
+                    disabled={busy}
+                    onClick={handleSaveClass}
+                    className="flex-1 rounded-xl bg-teal-600 px-4 py-3 text-sm font-semibold text-white hover:bg-teal-500 disabled:opacity-60"
+                  >
+                    {busy ? "Saving..." : "Save Changes"}
+                  </button>
+                  <button
+                    onClick={() => setEditingClass(null)}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Student Edit Modal */}
+          {editingStudent && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-lg">
+                <h3 className="text-lg font-semibold text-slate-900">
+                  Edit Student
+                </h3>
+                <div className="mt-4">
+                  <label className="text-xs font-semibold text-slate-600">
+                    Student name
+                  </label>
+                  <input
+                    value={editStudentName}
+                    onChange={(e) => setEditStudentName(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring"
+                  />
+                </div>
+                <div className="mt-6 flex gap-3">
+                  <button
+                    disabled={busy}
+                    onClick={handleSaveStudent}
+                    className="flex-1 rounded-xl bg-teal-600 px-4 py-3 text-sm font-semibold text-white hover:bg-teal-500 disabled:opacity-60"
+                  >
+                    {busy ? "Saving..." : "Save Name"}
+                  </button>
+                  <button
+                    onClick={() => setEditingStudent(null)}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ═══ TAB: Finance (Bursary) ═══ */}
+        <div className={activeTab !== "finance" ? "hidden" : ""}>
+          {/* Bursary Daily Totals */}
+          <div className="mt-6 rounded-2xl border border-amber-200 bg-linear-to-br from-amber-50 to-orange-50 p-6 shadow-sm border-l-4 border-l-amber-400">
+            <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-base font-semibold text-indigo-900">
-                  Daily Trends
+                <h2 className="text-base font-semibold text-amber-900">
+                  Bursary — Daily Totals
                 </h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Track daily activity across attendance and finance. Use this
-                  to spot drop-offs and peak days.
+                  Totals grouped per day for the selected date range.
                 </p>
               </div>
 
               <button
-                disabled={busy || !trendFrom || !trendTo}
-                onClick={loadTrends}
-                className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
+                disabled={bursaryBusy || !bursaryFrom || !bursaryTo}
+                onClick={() => loadBursaryDailyTotals(bursaryFrom, bursaryTo)}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
               >
-                Load Trends
+                {bursaryBusy ? "Loading..." : "Load"}
               </button>
             </div>
 
-            <div className="mt-4 grid gap-3 md:grid-cols-4">
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
               <div>
                 <label className="text-xs font-semibold text-slate-600">
                   From
                 </label>
                 <input
                   type="date"
-                  value={trendFrom}
-                  onChange={(e) => setTrendFrom(e.target.value)}
+                  value={bursaryFrom}
+                  onChange={(e) => setBursaryFrom(e.target.value)}
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
                 />
               </div>
@@ -2863,1471 +4319,574 @@ async function confirmRejectOut() {
                 </label>
                 <input
                   type="date"
-                  value={trendTo}
-                  onChange={(e) => setTrendTo(e.target.value)}
+                  value={bursaryTo}
+                  onChange={(e) => setBursaryTo(e.target.value)}
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
                 />
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                <div className="text-xs font-semibold text-slate-600">Days</div>
-                <div className="mt-1 text-lg font-semibold text-slate-900">
-                  {trends?.rows?.length ?? "—"}
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                 <div className="text-xs font-semibold text-slate-600">
-                  Teacher approvals (sum)
+                  Days shown
                 </div>
                 <div className="mt-1 text-lg font-semibold text-slate-900">
-                  {trends?.totals?.teacherApproved ?? "—"}
+                  {dailyTotals.length}
                 </div>
               </div>
             </div>
 
-            {/* ═══ Trends Chart ═══ */}
-            {trends?.rows?.length > 0 && (
-              <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
-                <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">
-                  Attendance & Finance Trend
-                </h3>
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={trends.rows} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis
-                      dataKey="date"
-                      tick={{ fontSize: 10 }}
-                      tickFormatter={(v) => v?.slice(5) || v}
-                    />
-                    <YAxis tick={{ fontSize: 10 }} />
-                    <Tooltip
-                      contentStyle={{ fontSize: 12, borderRadius: 12 }}
-                      labelFormatter={(v) => `Date: ${v}`}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 11 }} />
-                    <Bar dataKey="teacherApproved" name="Teachers Approved" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="studentSubmittedClasses" name="Classes Submitted" fill="#10b981" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="feesTotal" name="Fees (GHS)" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="bursaryGrand" name="Bursary (GHS)" fill="#a855f7" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-            <div className="mt-5 overflow-hidden rounded-xl border border-slate-200">
+            <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
               <div className="grid grid-cols-7 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
                 <div>Date</div>
-                <div className="text-center">Teachers Approved</div>
-                <div className="text-center">Teachers Pending</div>
-                <div className="text-center">Student Classes Submitted</div>
-                <div className="text-right">Fees (GHS)</div>
-                <div className="text-right">Bursary (GHS)</div>
-                <div className="text-right">Grand (GHS)</div>
+                <div className="text-center">Payments</div>
+                <div className="text-right">Feeding</div>
+                <div className="text-right">Fees</div>
+                <div className="text-right">Classes</div>
+                <div className="text-right">Health</div>
+                <div className="text-right">Grand</div>
               </div>
 
-              {trends?.rows?.length ? (
-                <div className="max-h-96 overflow-auto bg-white">
-                  {trends.rows.map((r) => (
-                    <div
-                      key={r.date}
-                      className="grid grid-cols-7 items-center border-t border-slate-200 px-4 py-3 text-sm"
-                    >
-                      <div className="font-semibold text-slate-900">
-                        {r.date}
-                      </div>
-                      <div className="text-center text-slate-700">
-                        {r.teacherApproved ?? 0}
-                      </div>
-                      <div className="text-center text-slate-700">
-                        {r.teacherPending ?? 0}
-                      </div>
-                      <div className="text-center text-slate-700">
-                        {r.studentSubmittedClasses ?? 0}
-                      </div>
-                      <div className="text-right text-slate-700">
-                        {r.feesTotal ?? 0}
-                      </div>
-                      <div className="text-right text-slate-700">
-                        {r.bursaryGrand ?? 0}
-                      </div>
-                      <div className="text-right font-semibold text-slate-900">
-                        {Number(r.feesTotal ?? 0) +
-                          Number(r.bursaryGrand ?? 0) || 0}
-                      </div>
+              {dailyTotals.length ? (
+                dailyTotals.map((d) => (
+                  <div
+                    key={d.date}
+                    className="grid grid-cols-7 items-center border-t border-slate-200 px-4 py-3 text-sm"
+                  >
+                    <div className="font-semibold text-slate-900">{d.date}</div>
+                    <div className="text-center text-slate-700">
+                      {d.paymentsCount}
                     </div>
-                  ))}
-                </div>
+                    <div className="text-right text-slate-700">
+                      GHS {d.feeding}
+                    </div>
+                    <div className="text-right text-slate-700">
+                      GHS {d.fees}
+                    </div>
+                    <div className="text-right text-slate-700">
+                      GHS {d.classes}
+                    </div>
+                    <div className="text-right text-slate-700">
+                      GHS {d.healthMaintenance}
+                    </div>
+                    <div className="text-right font-semibold text-slate-900">
+                      GHS {d.grand}
+                    </div>
+                  </div>
+                ))
               ) : (
                 <div className="px-4 py-6 text-sm text-slate-600">
-                  No trends loaded. Select a date range and click “Load Trends”.
+                  {bursaryBusy
+                    ? "Loading..."
+                    : "No bursary payments found in this range."}
                 </div>
               )}
             </div>
           </div>
-        </div>
-        </div>
-
-        {/* ═══ TAB: Finance ═══ */}
-        <div className={activeTab !== "finance" ? "hidden" : ""}>
-        {/* School Fees Receipts */}
-        <div className="mt-6 rounded-2xl border border-amber-200 bg-linear-to-br from-amber-50 to-orange-50 p-6 shadow-sm border-l-4 border-l-amber-400">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-base font-semibold text-amber-900">
-                School Fees Receipts
-              </h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Issues receipt numbers per-day and per-term. Admin only.
-              </p>
-            </div>
-            <button
-              disabled={receiptBusy}
-              onClick={loadTodayReceipts}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-            >
-              Refresh
-            </button>
-          </div>
-
-          <div className="mt-5 grid gap-4 md:grid-cols-2">
-            <div className="rounded-2xl border border-slate-200 p-5">
-              <h3 className="text-sm font-semibold text-slate-900">
-                Create Receipt
-              </h3>
-
-              <div className="mt-4 space-y-3">
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">
-                    Class
-                  </label>
-                  <select
-                    value={selectedClassId}
-                    onChange={(e) => setSelectedClassId(e.target.value)}
-                    disabled={receiptBusy || !classes.length}
-                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                  >
-                    {!classes.length ? (
-                      <option value="">No classes yet</option>
-                    ) : null}
-                    {classes.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} — {c.teacherName || c.teacherUid}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600">
-                      Student (from roster)
-                    </label>
-                    <select
-                      value={receiptStudentId}
-                      onChange={(e) => setReceiptStudentId(e.target.value)}
-                      disabled={receiptBusy || !selectedClassId}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                    >
-                      <option value="">Select student</option>
-                      {students.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.fullName || s.id}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600">
-                      Or type student name
-                    </label>
-                    <input
-                      value={receiptStudentName}
-                      onChange={(e) => setReceiptStudentName(e.target.value)}
-                      placeholder="e.g. Ama Mensah"
-                      disabled={receiptBusy}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-3">
-                  <div className="md:col-span-1">
-                    <label className="text-xs font-semibold text-slate-600">
-                      Amount ({school?.currency || "GHS"})
-                    </label>
-                    <input
-                      type="number"
-                      value={receiptAmount}
-                      onChange={(e) => setReceiptAmount(e.target.value)}
-                      placeholder="e.g. 250"
-                      disabled={receiptBusy}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                    />
-                  </div>
-
-                  <div className="md:col-span-1">
-                    <label className="text-xs font-semibold text-slate-600">
-                      Payment method
-                    </label>
-                    <select
-                      value={receiptMethod}
-                      onChange={(e) => setReceiptMethod(e.target.value)}
-                      disabled={receiptBusy}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                    >
-                      <option value="CASH">Cash</option>
-                      <option value="MOMO">MoMo</option>
-                      <option value="BANK">Bank</option>
-                    </select>
-                  </div>
-
-                  <div className="md:col-span-1">
-                    <label className="text-xs font-semibold text-slate-600">
-                      Reference (optional)
-                    </label>
-                    <input
-                      value={receiptRef}
-                      onChange={(e) => setReceiptRef(e.target.value)}
-                      placeholder="MoMo ref / teller"
-                      disabled={receiptBusy}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  disabled={receiptBusy}
-                  onClick={handleCreateReceipt}
-                  className="w-full rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
-                >
-                  {receiptBusy ? "Issuing..." : "Issue Receipt & Print"}
-                </button>
-
-                {lastReceipt ? (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
-                    <div className="font-semibold text-slate-900">
-                      Last receipt
-                    </div>
-                    <div className="text-xs text-slate-600 mt-1">
-                      Daily:{" "}
-                      <span className="font-semibold">
-                        {lastReceipt.dailyNo}
-                      </span>{" "}
-                      • Term:{" "}
-                      <span className="font-semibold">
-                        {lastReceipt.termNo}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => printReceipt(lastReceipt)}
-                      className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-                    >
-                      Print again
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 p-5">
-              <h3 className="text-sm font-semibold text-slate-900">
-                Today’s Receipts
-              </h3>
-
-              <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-                <div className="grid grid-cols-3 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
-                  <div>Receipt</div>
-                  <div>Student</div>
-                  <div className="text-right">Action</div>
-                </div>
-
-                {todayReceipts.length ? (
-                  <div className="max-h-80 overflow-auto bg-white">
-                    {todayReceipts.map((r) => (
-                      <div
-                        key={r.id}
-                        className="grid grid-cols-3 items-center border-t border-slate-200 px-4 py-3 text-sm"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate font-semibold text-slate-900">
-                            {r.dailyNo}
-                          </div>
-                          <div className="text-xs text-slate-500">
-                            {r.termNo}
-                          </div>
-                        </div>
-                        <div className="truncate text-slate-700">
-                          {r.studentName}
-                        </div>
-                        <div className="text-right">
-                          <button
-                            onClick={() => printReceipt(r)}
-                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                          >
-                            Print
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="px-4 py-6 text-sm text-slate-600">
-                    No receipts issued today.
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-        </div>
-
-        {/* ═══ TAB: Teachers ═══ */}
-        <div className={activeTab !== "teachers" ? "hidden" : ""}>
-        {/* Teachers */}
-        <div className="mt-6 rounded-2xl border border-violet-200 bg-linear-to-br from-violet-50 to-purple-50 p-6 shadow-sm border-l-4 border-l-violet-400">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-violet-900">Teachers</h2>
-            <span className="text-sm text-slate-600">
-              {filteredTeachers.length} shown
-            </span>
-          </div>
-
-          <div className="mt-4 flex gap-3">
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name, email, contact, address..."
-              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-            />
-          </div>
-
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-slate-600">
-                  <th className="py-2">Name</th>
-                  <th className="py-2">Email</th>
-                  <th className="py-2">Contact</th>
-                  <th className="py-2">Address</th>
-                  <th className="py-2">Salary</th>
-                  <th className="py-2">History</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredTeachers.length ? (
-                  filteredTeachers.map((t) => (
-                    <tr
-                      key={t.id}
-                      className="border-t border-slate-200 cursor-pointer hover:bg-slate-50"
-                      onClick={() => openTeacher(t)}
-                    >
-                      <td className="py-2 font-semibold text-slate-900">
-                        {t.fullName || "—"}
-                      </td>
-                      <td className="py-2 text-slate-700">{t.email || "—"}</td>
-                      <td className="py-2 text-slate-700">
-                        {t.contact || "—"}
-                      </td>
-                      <td className="py-2 text-slate-700">
-                        {t.address || "—"}
-                      </td>
-                      <td className="py-2 text-slate-700">
-                        {t.baseMonthlySalary != null
-                          ? `GHS ${t.baseMonthlySalary}`
-                          : "—"}
-                      </td>
-                      <td className="py-2">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); loadTeacherHistory(t.id); }}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                            teacherHistoryUid === t.id
-                              ? "bg-violet-600 text-white"
-                              : "border border-violet-200 bg-white text-violet-700 hover:bg-violet-50"
-                          }`}
-                        >
-                          {teacherHistoryUid === t.id ? "Hide" : "View"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td className="py-4 text-slate-600" colSpan={6}>
-                      No teachers found.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Teacher Attendance History Panel */}
-          {teacherHistoryUid && (
-            <div className="mt-4 rounded-xl border border-violet-200 bg-white p-4">
-              <h3 className="text-sm font-semibold text-violet-800">
-                Recent Attendance — {teachers.find((t) => t.id === teacherHistoryUid)?.fullName || "Teacher"}
-              </h3>
-              {historyBusy ? (
-                <p className="mt-3 text-sm text-slate-600">Loading...</p>
-              ) : teacherHistory.length ? (
-                <div className="mt-3 max-h-60 overflow-y-auto">
-                  <table className="w-full text-xs">
-                    <thead className="sticky top-0 bg-slate-50">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-medium text-slate-600">Date</th>
-                        <th className="px-3 py-2 text-left font-medium text-slate-600">Status</th>
-                        <th className="px-3 py-2 text-left font-medium text-slate-600">Late?</th>
-                        <th className="px-3 py-2 text-left font-medium text-slate-600">Check-in</th>
-                        <th className="px-3 py-2 text-left font-medium text-slate-600">Check-out</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {teacherHistory.map((h) => (
-                        <tr key={h.id} className="hover:bg-slate-50">
-                          <td className="px-3 py-2 font-semibold text-slate-900">{h.date || "—"}</td>
-                          <td className="px-3 py-2">
-                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                              h.status === "CHECKED_IN" || h.status === "CHECKED_OUT"
-                                ? "bg-emerald-100 text-emerald-700"
-                                : h.status === "PENDING"
-                                ? "bg-amber-100 text-amber-700"
-                                : "bg-slate-100 text-slate-600"
-                            }`}>
-                              {h.status || "—"}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2">
-                            {h.isLate === true ? (
-                              <span className="text-rose-600 font-semibold">YES</span>
-                            ) : h.isLate === false ? (
-                              <span className="text-emerald-600">NO</span>
-                            ) : "—"}
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {h.checkInApprovedAt ? new Date(h.checkInApprovedAt.toDate?.() ?? h.checkInApprovedAt).toLocaleTimeString() : "—"}
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {h.checkOutApprovedAt ? new Date(h.checkOutApprovedAt.toDate?.() ?? h.checkOutApprovedAt).toLocaleTimeString() : "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="mt-3 text-sm text-slate-500">No attendance records found (last 30 days).</p>
-              )}
-            </div>
-          )}
-
-          <p className="mt-2 text-xs text-slate-500">
-            Click a teacher row to view details and update
-            salary/contact/address.
-          </p>
-        </div>
-        </div>
-
-        {/* ═══ TAB: Classes ═══ */}
-        <div className={activeTab !== "classes" ? "hidden" : ""}>
-        {/* Class Setup */}
-        <div className="mt-6 rounded-2xl border border-teal-200 bg-linear-to-br from-teal-50 to-cyan-50 p-6 shadow-sm border-l-4 border-l-teal-400">
-          <h2 className="text-base font-semibold text-teal-900">
-            Class Setup
-          </h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Create classes and add students. Teachers already exist as users.
-          </p>
-
-          <div className="mt-5 grid gap-6 md:grid-cols-2">
-            {/* Create class */}
-            <div className="rounded-2xl border border-slate-200 p-5">
-              <h3 className="text-sm font-semibold text-slate-900">
-                Create Class
-              </h3>
-
-              <div className="mt-4 space-y-3">
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">
-                    Class name
-                  </label>
-                  <input
-                    value={className}
-                    onChange={(e) => setClassName(e.target.value)}
-                    placeholder="e.g. JHS 2A"
-                    disabled={busy}
-                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">
-                    Assign teacher
-                  </label>
-                  <select
-                    value={classTeacherId}
-                    onChange={(e) => setClassTeacherId(e.target.value)}
-                    disabled={busy}
-                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                  >
-                    <option value="">Select teacher</option>
-                    {teachers.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.fullName || t.email || t.id}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <button
-                  disabled={busy}
-                  onClick={handleCreateClass}
-                  className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-                >
-                  {busy ? "Working..." : "Create Class"}
-                </button>
-
-                <p className="text-xs text-slate-500">
-                  Each teacher manages exactly one class.
-                </p>
-              </div>
-            </div>
-
-            {/* Existing Classes List */}
-            <div className="rounded-2xl border border-slate-200 p-5">
-              <h3 className="text-sm font-semibold text-slate-900">Existing Classes</h3>
-              {classes.length ? (
-                <div className="mt-3 space-y-2">
-                  {classes.map((c) => (
-                    <div key={c.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                      <div>
-                        <div className="text-sm font-semibold text-slate-900">{c.name}</div>
-                        <div className="text-xs text-slate-500">{c.teacherName || c.teacherUid || "No teacher"}</div>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => openClassEditor(c)}
-                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          disabled={busy}
-                          onClick={() => handleDeleteClass(c)}
-                          className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-3 text-sm text-slate-500">No classes yet. Create one above.</p>
-              )}
-            </div>
-
-            {/* Add students */}
-            <div className="rounded-2xl border border-slate-200 p-5">
-              <h3 className="text-sm font-semibold text-slate-900">
-                Add Students
-              </h3>
-
-              <div className="mt-4 space-y-3">
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">
-                    Select class
-                  </label>
-                  <select
-                    value={selectedClassId}
-                    onChange={(e) => setSelectedClassId(e.target.value)}
-                    disabled={busy || !classes.length}
-                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                  >
-                    {!classes.length ? (
-                      <option value="">No classes yet</option>
-                    ) : null}
-                    {classes.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} — {c.teacherName || c.teacherUid}
-                      </option>
-                    ))}
-                  </select>
-
-                  {selectedClassForRoster ? (
-                    <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
-                      <div className="font-semibold text-slate-900">
-                        {selectedClassForRoster.name}
-                      </div>
-                      <div className="text-xs text-slate-600">
-                        Teacher:{" "}
-                        <span className="font-semibold text-slate-800">
-                          {selectedClassForRoster.teacherName || "—"}
-                        </span>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">
-                    Student name
-                  </label>
-                  <input
-                    value={studentName}
-                    onChange={(e) => setStudentName(e.target.value)}
-                    placeholder="e.g. Ama Mensah"
-                    disabled={busy || !selectedClassId}
-                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                  />
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600">
-                      Parent name (optional)
-                    </label>
-                    <input
-                      value={parentName}
-                      onChange={(e) => setParentName(e.target.value)}
-                      placeholder="e.g. Kofi Mensah"
-                      disabled={busy || !selectedClassId}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600">
-                      Parent phone (optional)
-                    </label>
-                    <input
-                      value={parentPhone}
-                      onChange={(e) => setParentPhone(e.target.value)}
-                      placeholder="e.g. +233 24 xxx xxxx"
-                      disabled={busy || !selectedClassId}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  disabled={busy || !selectedClassId}
-                  onClick={handleAddStudent}
-                  className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-                >
-                  {busy ? "Working..." : "Add Student"}
-                </button>
-
-                {/* Roster */}
-                <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-                  <div className="flex items-center justify-between bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
-                    <div>Roster</div>
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={loadStudentRates}
-                        disabled={ratesBusy || !students.length}
-                        className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
-                      >
-                        {ratesBusy ? "Loading…" : "📊 Load Attendance %"}
-                      </button>
-                      <div>{students.length} students</div>
-                    </div>
-                  </div>
-
-                  {students.length ? (
-                    <div className="max-h-80 overflow-auto">
-                      {students.map((s) => {
-                        const rateInfo = studentRates.get(s.id);
-                        return (
-                        <div
-                          key={s.id}
-                          className="flex items-start justify-between gap-3 border-t border-slate-200 px-4 py-3 text-sm"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 truncate">
-                              <span className="font-semibold text-slate-900">
-                                {s.fullName || "—"}
-                              </span>
-                              {rateInfo && (
-                                <span
-                                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                                    rateInfo.rate >= 90
-                                      ? "bg-emerald-100 text-emerald-700"
-                                      : rateInfo.rate >= 75
-                                        ? "bg-amber-100 text-amber-700"
-                                        : "bg-red-100 text-red-700"
-                                  }`}
-                                  title={`${rateInfo.present}/${rateInfo.total} days present (last 30 days)`}
-                                >
-                                  {rateInfo.rate}%
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-xs text-slate-500">
-                              {s.status || "ACTIVE"}
-                              {rateInfo && (
-                                <span className="ml-2 text-slate-400">
-                                  · {rateInfo.present}P / {rateInfo.absent}A in {rateInfo.total} days
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-700">
-                              <label className="flex items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={s.feeExempt === true}
-                                  disabled={busy}
-                                  onChange={(e) =>
-                                    updateStudentExemption(s.id, {
-                                      feeExempt: e.target.checked,
-                                    })
-                                  }
-                                />
-                                Fees exempt
-                              </label>
-
-                              <label className="flex items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={s.healthMaintenanceExempt === true}
-                                  disabled={busy}
-                                  onChange={(e) =>
-                                    updateStudentExemption(s.id, {
-                                      healthMaintenanceExempt: e.target.checked,
-                                    })
-                                  }
-                                />
-                                Health &amp; Maintenance exempt
-                              </label>
-                              <label className="flex items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={s.feedingExempt === true}
-                                  disabled={busy}
-                                  onChange={(e) =>
-                                    updateStudentExemption(s.id, {
-                                      feedingExempt: e.target.checked,
-                                    })
-                                  }
-                                />
-                                Feeding exempt
-                              </label>
-                            </div>
-                          </div>
-
-                          <div className="flex shrink-0 gap-2">
-                            <button
-                              onClick={() => openStudentEditor(s)}
-                              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-teal-700 hover:bg-teal-50"
-                              title="Edit student name"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              disabled={busy}
-                              onClick={() => handleRemoveStudent(s.id, s.fullName)}
-                              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
-                              title="Remove student"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="px-4 py-6 text-sm text-slate-600">
-                      {selectedClassId
-                        ? "No students added to this class yet."
-                        : "Select a class to view students."}
-                    </div>
-                  )}
-                </div>
-
-                <p className="text-xs text-slate-500">
-                  Add students one-by-one here. If you want bulk upload (Excel),
-                  we can add that next.
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Class Edit Modal */}
-        {editingClass && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-lg">
-              <h3 className="text-lg font-semibold text-slate-900">Edit Class</h3>
-              <div className="mt-4 space-y-3">
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">Class name</label>
-                  <input
-                    value={editClassName}
-                    onChange={(e) => setEditClassName(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">Assign teacher</label>
-                  <select
-                    value={editClassTeacherId}
-                    onChange={(e) => setEditClassTeacherId(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-                  >
-                    <option value="">Select teacher</option>
-                    {teachers.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.fullName || t.email || t.id}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="mt-6 flex gap-3">
-                <button
-                  disabled={busy}
-                  onClick={handleSaveClass}
-                  className="flex-1 rounded-xl bg-teal-600 px-4 py-3 text-sm font-semibold text-white hover:bg-teal-500 disabled:opacity-60"
-                >
-                  {busy ? "Saving..." : "Save Changes"}
-                </button>
-                <button
-                  onClick={() => setEditingClass(null)}
-                  className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Student Edit Modal */}
-        {editingStudent && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-lg">
-              <h3 className="text-lg font-semibold text-slate-900">Edit Student</h3>
-              <div className="mt-4">
-                <label className="text-xs font-semibold text-slate-600">Student name</label>
-                <input
-                  value={editStudentName}
-                  onChange={(e) => setEditStudentName(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring"
-                />
-              </div>
-              <div className="mt-6 flex gap-3">
-                <button
-                  disabled={busy}
-                  onClick={handleSaveStudent}
-                  className="flex-1 rounded-xl bg-teal-600 px-4 py-3 text-sm font-semibold text-white hover:bg-teal-500 disabled:opacity-60"
-                >
-                  {busy ? "Saving..." : "Save Name"}
-                </button>
-                <button
-                  onClick={() => setEditingStudent(null)}
-                  className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-        </div>
-
-        {/* ═══ TAB: Finance (Bursary) ═══ */}
-        <div className={activeTab !== "finance" ? "hidden" : ""}>
-        {/* Bursary Daily Totals */}
-        <div className="mt-6 rounded-2xl border border-amber-200 bg-linear-to-br from-amber-50 to-orange-50 p-6 shadow-sm border-l-4 border-l-amber-400">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-base font-semibold text-amber-900">
-                Bursary — Daily Totals
-              </h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Totals grouped per day for the selected date range.
-              </p>
-            </div>
-
-            <button
-              disabled={bursaryBusy || !bursaryFrom || !bursaryTo}
-              onClick={() => loadBursaryDailyTotals(bursaryFrom, bursaryTo)}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-            >
-              {bursaryBusy ? "Loading..." : "Load"}
-            </button>
-          </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <div>
-              <label className="text-xs font-semibold text-slate-600">
-                From
-              </label>
-              <input
-                type="date"
-                value={bursaryFrom}
-                onChange={(e) => setBursaryFrom(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-slate-600">To</label>
-              <input
-                type="date"
-                value={bursaryTo}
-                onChange={(e) => setBursaryTo(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              />
-            </div>
-
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-xs font-semibold text-slate-600">
-                Days shown
-              </div>
-              <div className="mt-1 text-lg font-semibold text-slate-900">
-                {dailyTotals.length}
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-            <div className="grid grid-cols-7 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
-              <div>Date</div>
-              <div className="text-center">Payments</div>
-              <div className="text-right">Feeding</div>
-              <div className="text-right">Fees</div>
-              <div className="text-right">Classes</div>
-              <div className="text-right">Health</div>
-              <div className="text-right">Grand</div>
-            </div>
-
-            {dailyTotals.length ? (
-              dailyTotals.map((d) => (
-                <div
-                  key={d.date}
-                  className="grid grid-cols-7 items-center border-t border-slate-200 px-4 py-3 text-sm"
-                >
-                  <div className="font-semibold text-slate-900">{d.date}</div>
-                  <div className="text-center text-slate-700">
-                    {d.paymentsCount}
-                  </div>
-                  <div className="text-right text-slate-700">
-                    GHS {d.feeding}
-                  </div>
-                  <div className="text-right text-slate-700">GHS {d.fees}</div>
-                  <div className="text-right text-slate-700">
-                    GHS {d.classes}
-                  </div>
-                  <div className="text-right text-slate-700">
-                    GHS {d.healthMaintenance}
-                  </div>
-                  <div className="text-right font-semibold text-slate-900">
-                    GHS {d.grand}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="px-4 py-6 text-sm text-slate-600">
-                {bursaryBusy
-                  ? "Loading..."
-                  : "No bursary payments found in this range."}
-              </div>
-            )}
-          </div>
-        </div>
         </div>
 
         {/* ═══ TAB: Attendance ═══ */}
         <div className={activeTab !== "attendance" ? "hidden" : ""}>
-        {/* Student Attendance (Today) */}
-        <div className="mt-6 rounded-2xl border border-emerald-200 bg-linear-to-br from-emerald-50 to-green-50 p-6 shadow-sm border-l-4 border-l-emerald-400">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-semibold text-emerald-900">
-                Student Attendance (Today)
-              </h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Shows today submissions per class. Click “View” to see
-                absentees.
-              </p>
+          {/* Student Attendance (Today) */}
+          <div className="mt-6 rounded-2xl border border-emerald-200 bg-linear-to-br from-emerald-50 to-green-50 p-6 shadow-sm border-l-4 border-l-emerald-400">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-emerald-900">
+                  Student Attendance (Today)
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Shows today submissions per class. Click “View” to see
+                  absentees.
+                </p>
+              </div>
+
+              <button
+                disabled={sessionsBusy}
+                onClick={refresh}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              >
+                {sessionsBusy ? "Refreshing..." : "Refresh"}
+              </button>
             </div>
 
-            <button
-              disabled={sessionsBusy}
-              onClick={refresh}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-            >
-              {sessionsBusy ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
+            <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+              <div className="grid grid-cols-6 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+                <div className="col-span-2">Class</div>
+                <div>Teacher</div>
+                <div className="text-center">Present</div>
+                <div className="text-center">Absent</div>
+                <div className="text-right">Action</div>
+              </div>
 
-          <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-            <div className="grid grid-cols-6 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
-              <div className="col-span-2">Class</div>
-              <div>Teacher</div>
-              <div className="text-center">Present</div>
-              <div className="text-center">Absent</div>
-              <div className="text-right">Action</div>
-            </div>
+              {todaySessions.length ? (
+                todaySessions.map((s) => {
+                  const isOpen = openSessionId === s.id;
+                  const submitted = s.status === "SUBMITTED";
 
-            {todaySessions.length ? (
-              todaySessions.map((s) => {
-                const isOpen = openSessionId === s.id;
-                const submitted = s.status === "SUBMITTED";
-
-                return (
-                  <div key={s.id} className="border-t border-slate-200">
-                    <div className="grid grid-cols-6 items-center gap-x-3 px-4 py-3 text-sm">
-                      <div className="col-span-2 min-w-0">
-                        <div className="truncate font-semibold text-slate-900">
-                          {s.className}
-                        </div>
-                        <div className="text-xs text-slate-500">
-                          Status:{" "}
-                          <span
-                            className={
-                              submitted ? "text-emerald-700" : "text-amber-700"
-                            }
-                          >
-                            {submitted ? "SUBMITTED" : "NOT SUBMITTED"}
-                          </span>
-                          {" • "}Date: {s.date}
-                        </div>
-                      </div>
-
-                      <div className="min-w-0 truncate text-slate-700">
-                        {s.teacherName || "—"}
-                      </div>
-
-                      <div className="text-center font-semibold text-slate-900">
-                        {submitted ? s.presentCount : "—"}
-                      </div>
-                      <div className="text-center font-semibold text-slate-900">
-                        {submitted ? s.absentCount : "—"}
-                      </div>
-
-                      <div className="text-right">
-                        <button
-                          disabled={!submitted || absentBusy}
-                          onClick={() => toggleOpenSession(s.id)}
-                          className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-                        >
-                          {isOpen ? "Hide" : "View"}
-                        </button>
-                      </div>
-                    </div>
-
-                    {isOpen ? (
-                      <div className="bg-slate-50 px-4 py-4">
-                        <div className="flex items-center justify-between">
-                          <div className="text-xs font-semibold text-slate-600">
-                            Absent students
+                  return (
+                    <div key={s.id} className="border-t border-slate-200">
+                      <div className="grid grid-cols-6 items-center gap-x-3 px-4 py-3 text-sm">
+                        <div className="col-span-2 min-w-0">
+                          <div className="truncate font-semibold text-slate-900">
+                            {s.className}
                           </div>
-                          {s.adminOverride && (
-                            <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-700">
-                              Admin edited
+                          <div className="text-xs text-slate-500">
+                            Status:{" "}
+                            <span
+                              className={
+                                submitted
+                                  ? "text-emerald-700"
+                                  : "text-amber-700"
+                              }
+                            >
+                              {submitted ? "SUBMITTED" : "NOT SUBMITTED"}
                             </span>
-                          )}
+                            {" • "}Date: {s.date}
+                          </div>
                         </div>
 
-                        {absentBusy ? (
-                          <div className="mt-2 text-sm text-slate-600">
-                            Loading...
+                        <div className="min-w-0 truncate text-slate-700">
+                          {s.teacherName || "—"}
+                        </div>
+
+                        <div className="text-center font-semibold text-slate-900">
+                          {submitted ? s.presentCount : "—"}
+                        </div>
+                        <div className="text-center font-semibold text-slate-900">
+                          {submitted ? s.absentCount : "—"}
+                        </div>
+
+                        <div className="text-right">
+                          <button
+                            disabled={!submitted || absentBusy}
+                            onClick={() => toggleOpenSession(s.id)}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                          >
+                            {isOpen ? "Hide" : "View"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {isOpen ? (
+                        <div className="bg-slate-50 px-4 py-4">
+                          <div className="flex items-center justify-between">
+                            <div className="text-xs font-semibold text-slate-600">
+                              Absent students
+                            </div>
+                            {s.adminOverride && (
+                              <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-700">
+                                Admin edited
+                              </span>
+                            )}
                           </div>
-                        ) : openAbsent.length ? (
-                          <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                            {openAbsent.map((a) => (
-                              <div
-                                key={a.id}
-                                className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-sm"
-                              >
-                                <div className="min-w-0 flex-1">
-                                  <div className="font-semibold text-slate-900">
-                                    {a.studentName || a.studentId || "—"}
-                                    {a.adminOverride && (
-                                      <span className="ml-1.5 text-[10px] font-bold text-violet-600">★</span>
-                                    )}
-                                  </div>
-                                  <div className="text-xs text-slate-500">
-                                    {a.reason
-                                      ? `Reason: ${a.reason}`
-                                      : "No reason"}
-                                  </div>
-                                </div>
-                                <button
-                                  disabled={overrideBusy === a.id}
-                                  onClick={() =>
-                                    handleOverride(
-                                      a.id,
-                                      a.studentName || a.studentId,
-                                      "MARK_PRESENT"
-                                    )
-                                  }
-                                  className="ml-3 shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+
+                          {absentBusy ? (
+                            <div className="mt-2 text-sm text-slate-600">
+                              Loading...
+                            </div>
+                          ) : openAbsent.length ? (
+                            <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                              {openAbsent.map((a) => (
+                                <div
+                                  key={a.id}
+                                  className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-sm"
                                 >
-                                  {overrideBusy === a.id ? "…" : "✓ Mark Present"}
+                                  <div className="min-w-0 flex-1">
+                                    <div className="font-semibold text-slate-900">
+                                      {a.studentName || a.studentId || "—"}
+                                      {a.adminOverride && (
+                                        <span className="ml-1.5 text-[10px] font-bold text-violet-600">
+                                          ★
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-slate-500">
+                                      {a.reason
+                                        ? `Reason: ${a.reason}`
+                                        : "No reason"}
+                                    </div>
+                                  </div>
+                                  <button
+                                    disabled={overrideBusy === a.id}
+                                    onClick={() =>
+                                      handleOverride(
+                                        a.id,
+                                        a.studentName || a.studentId,
+                                        "MARK_PRESENT",
+                                      )
+                                    }
+                                    className="ml-3 shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                                  >
+                                    {overrideBusy === a.id
+                                      ? "…"
+                                      : "✓ Mark Present"}
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="mt-2 text-sm text-slate-600">
+                              No absentees marked.
+                            </div>
+                          )}
+
+                          {/* Add student as absent (override) */}
+                          {overrideStudents.length > 0 && (
+                            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/60 p-3">
+                              <div className="text-xs font-semibold text-amber-800">
+                                Mark a present student as absent
+                              </div>
+                              <div className="mt-2 flex items-center gap-2">
+                                <select
+                                  value={overrideAddId}
+                                  onChange={(e) =>
+                                    setOverrideAddId(e.target.value)
+                                  }
+                                  className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:ring"
+                                >
+                                  <option value="">Select student…</option>
+                                  {overrideStudents
+                                    .filter(
+                                      (st) =>
+                                        !openAbsent.some((a) => a.id === st.id),
+                                    )
+                                    .map((st) => (
+                                      <option key={st.id} value={st.id}>
+                                        {st.fullName || st.id}
+                                      </option>
+                                    ))}
+                                </select>
+                                <button
+                                  disabled={
+                                    !overrideAddId ||
+                                    overrideBusy === overrideAddId
+                                  }
+                                  onClick={() => {
+                                    const st = overrideStudents.find(
+                                      (x) => x.id === overrideAddId,
+                                    );
+                                    if (st)
+                                      handleOverride(
+                                        st.id,
+                                        st.fullName || st.id,
+                                        "MARK_ABSENT",
+                                      );
+                                  }}
+                                  className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                                >
+                                  {overrideBusy === overrideAddId
+                                    ? "…"
+                                    : "✗ Mark Absent"}
                                 </button>
                               </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="mt-2 text-sm text-slate-600">
-                            No absentees marked.
-                          </div>
-                        )}
-
-                        {/* Add student as absent (override) */}
-                        {overrideStudents.length > 0 && (
-                          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/60 p-3">
-                            <div className="text-xs font-semibold text-amber-800">
-                              Mark a present student as absent
                             </div>
-                            <div className="mt-2 flex items-center gap-2">
-                              <select
-                                value={overrideAddId}
-                                onChange={(e) => setOverrideAddId(e.target.value)}
-                                className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:ring"
-                              >
-                                <option value="">Select student…</option>
-                                {overrideStudents
-                                  .filter(
-                                    (st) =>
-                                      !openAbsent.some((a) => a.id === st.id)
-                                  )
-                                  .map((st) => (
-                                    <option key={st.id} value={st.id}>
-                                      {st.fullName || st.id}
-                                    </option>
-                                  ))}
-                              </select>
-                              <button
-                                disabled={
-                                  !overrideAddId || overrideBusy === overrideAddId
-                                }
-                                onClick={() => {
-                                  const st = overrideStudents.find(
-                                    (x) => x.id === overrideAddId
-                                  );
-                                  if (st)
-                                    handleOverride(
-                                      st.id,
-                                      st.fullName || st.id,
-                                      "MARK_ABSENT"
-                                    );
-                                }}
-                                className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
-                              >
-                                {overrideBusy === overrideAddId
-                                  ? "…"
-                                  : "✗ Mark Absent"}
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })
-            ) : (
-              <div className="px-4 py-6 text-sm text-slate-600">
-                {sessionsBusy ? "Loading..." : "No classes found yet."}
-              </div>
-            )}
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="px-4 py-6 text-sm text-slate-600">
+                  {sessionsBusy ? "Loading..." : "No classes found yet."}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
         </div>
 
         {/* ═══ TAB: Reports ═══ */}
         <div className={activeTab !== "reports" ? "hidden" : ""}>
-        {/* Admin: Report Viewer */}
-        <div className="mt-6 rounded-2xl border border-rose-200 bg-linear-to-br from-rose-50 to-pink-50 p-6 shadow-sm border-l-4 border-l-rose-400">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-base font-semibold text-rose-900">
-                Report Viewer (Admin)
-              </h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Load and print a student report by Class → Student → Year/Term.
-                Printing includes Total Score and Position.
-              </p>
-            </div>
-
-            <button
-              disabled={reportBusy}
-              onClick={loadReport}
-              className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
-            >
-              {reportBusy ? "Loading..." : "Load Report"}
-            </button>
-          </div>
-
-          <div className="mt-4 grid gap-4 md:grid-cols-4">
-            <div className="md:col-span-2">
-              <label className="text-xs font-semibold text-slate-600">
-                Select Class
-              </label>
-              <select
-                value={reportClassId}
-                onChange={(e) => setReportClassId(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              >
-                <option value="">Choose class...</option>
-                {classes.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} — {c.teacherName || c.teacherUid}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="md:col-span-2">
-              <label className="text-xs font-semibold text-slate-600">
-                Select Student
-              </label>
-              <select
-                value={reportStudentId}
-                onChange={(e) => setReportStudentId(e.target.value)}
-                disabled={!reportClassId}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
-              >
-                {!reportClassId ? (
-                  <option value="">Select a class first</option>
-                ) : (
-                  reportStudents.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.fullName || s.id}
-                    </option>
-                  ))
-                )}
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-slate-600">
-                Year
-              </label>
-              <input
-                value={reportYear}
-                onChange={(e) => setReportYear(e.target.value)}
-                placeholder="e.g. 2026"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-slate-600">
-                Term
-              </label>
-              <select
-                value={reportTerm}
-                onChange={(e) => setReportTerm(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              >
-                <option value="1">1</option>
-                <option value="2">2</option>
-                <option value="3">3</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="mt-5 overflow-hidden rounded-xl border border-slate-200">
-            <div className="flex items-center justify-between bg-slate-50 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-900">
-                {loadedReport ? "Loaded Report" : "No report loaded"}
+          {/* Admin: Report Viewer */}
+          <div className="mt-6 rounded-2xl border border-rose-200 bg-linear-to-br from-rose-50 to-pink-50 p-6 shadow-sm border-l-4 border-l-rose-400">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-semibold text-rose-900">
+                  Report Viewer (Admin)
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Load and print a student report by Class → Student →
+                  Year/Term. Printing includes Total Score and Position.
+                </p>
               </div>
 
               <button
-                disabled={!loadedReport}
-                onClick={() => {
-                  const cls = classes.find((c) => c.id === reportClassId);
-                  const st = reportStudents.find(
-                    (s) => s.id === reportStudentId
-                  );
-                  printStudentReport({
-                    report: loadedReport,
-                    student: st,
-                    cls,
-                    schoolName: "GREENIDGE INTERNATIONAL SCH.",
-                    ranking: classRanking,
-                  });
-                }}
-                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                disabled={reportBusy}
+                onClick={loadReport}
+                className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
               >
-                Print to paper
+                {reportBusy ? "Loading..." : "Load Report"}
               </button>
             </div>
 
-            {loadedReport ? (
-              <div className="bg-white px-4 py-4 text-sm text-slate-700">
-                {(() => {
-                  const total = calcOverallTotal(loadedReport);
-                  const posObj = classRanking.get(reportStudentId);
-                  const pos = posObj ? ordinal(posObj.position) : "—";
-                  const outOf = classRanking.size || "—";
-                  return (
-                    <>
-                      <div className="grid gap-2 md:grid-cols-2">
-                        <div>
-                          <div className="text-xs text-slate-500">
-                            Report ID
-                          </div>
-                          <div className="font-semibold">{loadedReport.id}</div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-slate-500">
-                            Report Type
-                          </div>
-                          <div className="font-semibold">
-                            {loadedReport.reportType || "—"}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-slate-500">
-                            Total Score (sum of subject totals)
-                          </div>
-                          <div className="font-semibold">{total}</div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-slate-500">Position</div>
-                          <div className="font-semibold">
-                            {pos} {classRanking.size ? `out of ${outOf}` : ""}
-                          </div>
-                        </div>
-                      </div>
-
-                      <p className="mt-3 text-xs text-slate-500">
-                        Position is ranked within the same Class, Year and Term
-                        using Total Score = Σ(Class Score + Exams Score). Ties
-                        share the same position (1,2,2,4...).
-                      </p>
-                    </>
-                  );
-                })()}
+            <div className="mt-4 grid gap-4 md:grid-cols-4">
+              <div className="md:col-span-2">
+                <label className="text-xs font-semibold text-slate-600">
+                  Select Class
+                </label>
+                <select
+                  value={reportClassId}
+                  onChange={(e) => setReportClassId(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                >
+                  <option value="">Choose class...</option>
+                  {classes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} — {c.teacherName || c.teacherUid}
+                    </option>
+                  ))}
+                </select>
               </div>
-            ) : (
-              <div className="bg-white px-4 py-6 text-sm text-slate-600">
-                Choose a class, student, year and term, then click “Load
-                Report”.
+
+              <div className="md:col-span-2">
+                <label className="text-xs font-semibold text-slate-600">
+                  Select Student
+                </label>
+                <select
+                  value={reportStudentId}
+                  onChange={(e) => setReportStudentId(e.target.value)}
+                  disabled={!reportClassId}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+                >
+                  {!reportClassId ? (
+                    <option value="">Select a class first</option>
+                  ) : (
+                    reportStudents.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.fullName || s.id}
+                      </option>
+                    ))
+                  )}
+                </select>
               </div>
-            )}
+
+              <div>
+                <label className="text-xs font-semibold text-slate-600">
+                  Year
+                </label>
+                <input
+                  value={reportYear}
+                  onChange={(e) => setReportYear(e.target.value)}
+                  placeholder="e.g. 2026"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-600">
+                  Term
+                </label>
+                <select
+                  value={reportTerm}
+                  onChange={(e) => setReportTerm(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                >
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-5 overflow-hidden rounded-xl border border-slate-200">
+              <div className="flex items-center justify-between bg-slate-50 px-4 py-3">
+                <div className="text-sm font-semibold text-slate-900">
+                  {loadedReport ? "Loaded Report" : "No report loaded"}
+                </div>
+
+                <button
+                  disabled={!loadedReport}
+                  onClick={() => {
+                    const cls = classes.find((c) => c.id === reportClassId);
+                    const st = reportStudents.find(
+                      (s) => s.id === reportStudentId,
+                    );
+                    printStudentReport({
+                      report: loadedReport,
+                      student: st,
+                      cls,
+                      schoolName: "GREENIDGE INTERNATIONAL SCH.",
+                      ranking: classRanking,
+                    });
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                >
+                  Print to paper
+                </button>
+              </div>
+
+              {loadedReport ? (
+                <div className="bg-white px-4 py-4 text-sm text-slate-700">
+                  {(() => {
+                    const total = calcOverallTotal(loadedReport);
+                    const posObj = classRanking.get(reportStudentId);
+                    const pos = posObj ? ordinal(posObj.position) : "—";
+                    const outOf = classRanking.size || "—";
+                    return (
+                      <>
+                        <div className="grid gap-2 md:grid-cols-2">
+                          <div>
+                            <div className="text-xs text-slate-500">
+                              Report ID
+                            </div>
+                            <div className="font-semibold">
+                              {loadedReport.id}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-slate-500">
+                              Report Type
+                            </div>
+                            <div className="font-semibold">
+                              {loadedReport.reportType || "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-slate-500">
+                              Total Score (sum of subject totals)
+                            </div>
+                            <div className="font-semibold">{total}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-slate-500">
+                              Position
+                            </div>
+                            <div className="font-semibold">
+                              {pos} {classRanking.size ? `out of ${outOf}` : ""}
+                            </div>
+                          </div>
+                        </div>
+
+                        <p className="mt-3 text-xs text-slate-500">
+                          Position is ranked within the same Class, Year and
+                          Term using Total Score = Σ(Class Score + Exams Score).
+                          Ties share the same position (1,2,2,4...).
+                        </p>
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <div className="bg-white px-4 py-6 text-sm text-slate-600">
+                  Choose a class, student, year and term, then click “Load
+                  Report”.
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-        <div className="mt-6 rounded-2xl border border-rose-200 bg-linear-to-br from-rose-50 to-pink-50 p-6 shadow-sm border-l-4 border-l-rose-400">
-          <h2 className="text-base font-semibold text-rose-900">
-            Compute BASIC Positions
-          </h2>
-          <p className="mt-1 text-xs text-slate-500">
-            After teachers finish saving reports, run this to compute class
-            positions and subject positions.
-          </p>
+          <div className="mt-6 rounded-2xl border border-rose-200 bg-linear-to-br from-rose-50 to-pink-50 p-6 shadow-sm border-l-4 border-l-rose-400">
+            <h2 className="text-base font-semibold text-rose-900">
+              Compute BASIC Positions
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              After teachers finish saving reports, run this to compute class
+              positions and subject positions.
+            </p>
 
-          <div className="mt-4 grid gap-3 md:grid-cols-4">
-            <div className="md:col-span-2">
-              <label className="text-xs font-semibold text-slate-600">
-                Class
-              </label>
-              <select
-                value={reportClassId}
-                onChange={(e) => setReportClassId(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              >
-                <option value="">Choose class...</option>
-                {classes.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} — {c.teacherName || c.teacherUid}
-                  </option>
-                ))}
-              </select>
+            <div className="mt-4 grid gap-3 md:grid-cols-4">
+              <div className="md:col-span-2">
+                <label className="text-xs font-semibold text-slate-600">
+                  Class
+                </label>
+                <select
+                  value={reportClassId}
+                  onChange={(e) => setReportClassId(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                >
+                  <option value="">Choose class...</option>
+                  {classes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} — {c.teacherName || c.teacherUid}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-600">
+                  Year
+                </label>
+                <input
+                  value={reportYear}
+                  onChange={(e) => setReportYear(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-600">
+                  Term
+                </label>
+                <select
+                  value={reportTerm}
+                  onChange={(e) => setReportTerm(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                >
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </div>
             </div>
 
-            <div>
-              <label className="text-xs font-semibold text-slate-600">
-                Year
-              </label>
-              <input
-                value={reportYear}
-                onChange={(e) => setReportYear(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-slate-600">
-                Term
-              </label>
-              <select
-                value={reportTerm}
-                onChange={(e) => setReportTerm(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              >
-                <option value="1">1</option>
-                <option value="2">2</option>
-                <option value="3">3</option>
-              </select>
-            </div>
-          </div>
-
-          <button
-            onClick={async () => {
-              toast.dismiss();
-              try {
-                if (!reportClassId) throw new Error("Select a class.");
-                const res = await computeAndWriteBasicPositions({
-                  classId: reportClassId,
-                  year: reportYear,
-                  termNo: Number(reportTerm),
-                });
-                toast.success(
-                  `Positions updated for ${res.updatedCount} students.`
-                );
-              } catch (e) {
-                toast.error(e?.message || "Failed to compute positions.");
-              }
-            }}
-            className="mt-4 rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500"
-          >
-            Compute Positions Now
-          </button>
-        </div>
-
-        {/* Export CSV */}
-        <div className="mt-6 rounded-2xl border border-rose-200 bg-linear-to-br from-rose-50 to-pink-50 p-6 shadow-sm border-l-4 border-l-rose-400">
-          <h2 className="text-base font-semibold text-rose-900">
-            Export Monthly Report (CSV)
-          </h2>
-
-          <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center">
-            <input
-              value={exportMonth}
-              onChange={(e) => setExportMonth(e.target.value)}
-              placeholder="Month key e.g. 2026-01"
-              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-            />
             <button
-              disabled={busy}
-              onClick={exportMonthlyCsv}
-              className="rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+              onClick={async () => {
+                toast.dismiss();
+                try {
+                  if (!reportClassId) throw new Error("Select a class.");
+                  const res = await computeAndWriteBasicPositions({
+                    classId: reportClassId,
+                    year: reportYear,
+                    termNo: Number(reportTerm),
+                  });
+                  toast.success(
+                    `Positions updated for ${res.updatedCount} students.`,
+                  );
+                } catch (e) {
+                  toast.error(e?.message || "Failed to compute positions.");
+                }
+              }}
+              className="mt-4 rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500"
             >
-              {busy ? "Exporting..." : "Export CSV"}
+              Compute Positions Now
             </button>
           </div>
 
-          <p className="mt-2 text-xs text-slate-500">
-            Exports all attendance records where{" "}
-            <span className="font-semibold">monthKey</span> matches (example:
-            2026-01).
-          </p>
-        </div>
+          {/* Export CSV */}
+          <div className="mt-6 rounded-2xl border border-rose-200 bg-linear-to-br from-rose-50 to-pink-50 p-6 shadow-sm border-l-4 border-l-rose-400">
+            <h2 className="text-base font-semibold text-rose-900">
+              Export Monthly Report (CSV)
+            </h2>
+
+            <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center">
+              <input
+                value={exportMonth}
+                onChange={(e) => setExportMonth(e.target.value)}
+                placeholder="Month key e.g. 2026-01"
+                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+              />
+              <button
+                disabled={busy}
+                onClick={exportMonthlyCsv}
+                className="rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+              >
+                {busy ? "Exporting..." : "Export CSV"}
+              </button>
+            </div>
+
+            <p className="mt-2 text-xs text-slate-500">
+              Exports all attendance records where{" "}
+              <span className="font-semibold">monthKey</span> matches (example:
+              2026-01).
+            </p>
+          </div>
         </div>
 
         {/* ═══ TAB: Tests ═══ */}
         <div className={activeTab !== "tests" ? "hidden" : ""}>
           <div className="rounded-2xl border border-cyan-200 bg-linear-to-br from-cyan-50 to-teal-50 p-6 shadow-sm border-l-4 border-l-cyan-400">
-            <h2 className="text-base font-semibold text-cyan-900">📋 Trial Test Entry</h2>
+            <h2 className="text-base font-semibold text-cyan-900">
+              📋 Trial Test Entry
+            </h2>
             <p className="mt-1 text-xs text-slate-500">
               Enter and manage trial test scores for students across classes.
             </p>
@@ -4344,229 +4903,262 @@ async function confirmRejectOut() {
 
         {/* ═══ TAB: Payroll ═══ */}
         <div className={activeTab !== "payroll" ? "hidden" : ""}>
-        <div className="mt-6 rounded-2xl border border-sky-200 bg-linear-to-br from-sky-50 to-blue-50 p-6 shadow-sm border-l-4 border-l-sky-400">
-          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-            <div>
-              <h2 className="text-base font-semibold text-sky-900">Payroll</h2>
-      <p className="mt-1 text-xs text-slate-500">
-        Calculates Net Salary = Base − (Late penalties + SSNIT 5.5% + Welfare GHS 20 + Other deductions).
-      </p>
-    </div>
-
-    <div className="flex flex-wrap gap-2">
-      <button
-        disabled={payrollBusy}
-        onClick={loadPayroll}
-        className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
-      >
-        {payrollBusy ? "Loading..." : "Load Payroll"}
-      </button>
-
-      <button
-        disabled={payrollBusy || !payrollMonth}
-        onClick={printAllPayrollPdf}
-        className="rounded-xl border border-sky-200 bg-white px-4 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-50 disabled:opacity-60"
-      >
-        Print All (PDF)
-      </button>
-
-      <button
-        disabled={payrollBusy || !payrollMonth}
-        onClick={printTeachersPayrollRegister}
-        className="rounded-xl border border-sky-200 bg-white px-4 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-50 disabled:opacity-60"
-      >
-        Print Teachers Register
-      </button>
-    </div>
-  </div>
-
-  <div className="mt-4 grid gap-4 md:grid-cols-3">
-    <div>
-      <label className="text-xs font-semibold text-slate-600">Month (YYYY-MM)</label>
-      <input
-        value={payrollMonth}
-        onChange={(e) => setPayrollMonth(e.target.value)}
-        placeholder="e.g. 2026-01"
-        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-      />
-    </div>
-
-    <div className="md:col-span-2">
-      <label className="text-xs font-semibold text-slate-600">Teacher</label>
-      <select
-        value={payrollTeacherId}
-        onChange={(e) => setPayrollTeacherId(e.target.value)}
-        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-      >
-        <option value="">Select teacher...</option>
-        {teachers.map((t) => (
-          <option key={t.id} value={t.id}>
-            {t.fullName || t.email || t.id}
-          </option>
-        ))}
-      </select>
-    </div>
-  </div>
-
-
-  {/* Summary */}
-  <div className="mt-5 overflow-hidden rounded-xl border border-slate-200">
-    <div className="bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-900">
-      Payroll Summary
-    </div>
-
-    {payrollSummary ? (
-      <div className="bg-white px-4 py-4">
-        <div className="grid gap-4 md:grid-cols-4">
-          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <div className="text-xs font-semibold text-slate-600">Base Salary</div>
-            <div className="mt-1 text-lg font-semibold text-slate-900">
-              {payrollSummary.currency} {money(payrollSummary.baseSalary)}
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <div className="text-xs font-semibold text-slate-600">Late Penalty</div>
-            <div className="mt-1 text-lg font-semibold text-slate-900">
-              {payrollSummary.currency} {money(payrollSummary.totalLatePenalty)}
-            </div>
-            <div className="mt-1 text-xs text-slate-500">
-              Late days: {payrollSummary.lateCount}
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <div className="text-xs font-semibold text-slate-600">
-              SSNIT ({(Number(payrollSummary.ssnitRate) * 100).toFixed(1)}%)
-            </div>
-            <div className="mt-1 text-lg font-semibold text-slate-900">
-              {payrollSummary.currency} {money(payrollSummary.ssnit)}
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <div className="text-xs font-semibold text-slate-600">Welfare</div>
-            <div className="mt-1 text-lg font-semibold text-slate-900">
-              {payrollSummary.currency} {money(payrollSummary.welfare)}
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold text-slate-900">Other Deductions</div>
-            <div className="text-sm font-semibold text-slate-900">
-              {payrollSummary.currency} {money(payrollSummary.otherDeductionsTotal)}
-            </div>
-          </div>
-
-          {/* Add deduction */}
-          <div className="mt-3 grid gap-3 md:grid-cols-3">
-            <div className="md:col-span-2">
-              <label className="text-xs font-semibold text-slate-600">Label</label>
-              <input
-                value={deductionLabel}
-                onChange={(e) => setDeductionLabel(e.target.value)}
-                placeholder="e.g. Loan repayment"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-slate-600">Amount (GHS)</label>
-              <input
-                type="number"
-                value={deductionAmount}
-                onChange={(e) => setDeductionAmount(e.target.value)}
-                placeholder="e.g. 50"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
-              />
-            </div>
-          </div>
-
-          <div className="mt-3 grid gap-2 md:grid-cols-2">
-            <button
-              disabled={payrollBusy}
-              onClick={addOtherDeduction}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-            >
-              Add Deduction
-            </button>
-
-            <button
-              disabled={payrollBusy || !payrollTeacherId || !payrollMonth}
-              onClick={savePayrollDeductions}
-              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-            >
-              {payrollBusy ? "Saving..." : "Save Deductions"}
-            </button>
-          </div>
-
-          {/* Deductions list */}
-          <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-            <div className="grid grid-cols-3 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
-              <div>Label</div>
-              <div className="text-right">Amount</div>
-              <div className="text-right">Action</div>
-            </div>
-
-            {payrollOtherDeductions.length ? (
-              payrollOtherDeductions.map((d) => (
-                <div
-                  key={d.id}
-                  className="grid grid-cols-3 items-center border-t border-slate-200 px-4 py-3 text-sm"
-                >
-                  <div className="truncate text-slate-700">{d.label}</div>
-                  <div className="text-right font-semibold text-slate-900">
-                    GHS {money(d.amount)}
-                  </div>
-                  <div className="text-right">
-                    <button
-                      disabled={payrollBusy}
-                      onClick={() => removeOtherDeduction(d.id)}
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="px-4 py-4 text-sm text-slate-600">
-                No other deductions for this month.
+          <div className="mt-6 rounded-2xl border border-sky-200 bg-linear-to-br from-sky-50 to-blue-50 p-6 shadow-sm border-l-4 border-l-sky-400">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-sky-900">
+                  Payroll
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Calculates Net Salary = Base − (Late penalties + SSNIT 5.5% +
+                  Welfare GHS 20 + Other deductions).
+                </p>
               </div>
-            )}
-          </div>
-        </div>
 
-        {/* Totals */}
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <div className="text-xs font-semibold text-slate-600">Total Deductions</div>
-            <div className="mt-1 text-lg font-semibold text-slate-900">
-              {payrollSummary.currency} {money(payrollSummary.totalDeductions)}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  disabled={payrollBusy}
+                  onClick={loadPayroll}
+                  className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
+                >
+                  {payrollBusy ? "Loading..." : "Load Payroll"}
+                </button>
+
+                <button
+                  disabled={payrollBusy || !payrollMonth}
+                  onClick={printAllPayrollPdf}
+                  className="rounded-xl border border-sky-200 bg-white px-4 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-50 disabled:opacity-60"
+                >
+                  Print All (PDF)
+                </button>
+
+                <button
+                  disabled={payrollBusy || !payrollMonth}
+                  onClick={printTeachersPayrollRegister}
+                  className="rounded-xl border border-sky-200 bg-white px-4 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-50 disabled:opacity-60"
+                >
+                  Print Teachers Register
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <div>
+                <label className="text-xs font-semibold text-slate-600">
+                  Month (YYYY-MM)
+                </label>
+                <input
+                  value={payrollMonth}
+                  onChange={(e) => setPayrollMonth(e.target.value)}
+                  placeholder="e.g. 2026-01"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                />
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="text-xs font-semibold text-slate-600">
+                  Teacher
+                </label>
+                <select
+                  value={payrollTeacherId}
+                  onChange={(e) => setPayrollTeacherId(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                >
+                  <option value="">Select teacher...</option>
+                  {teachers.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.fullName || t.email || t.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Summary */}
+            <div className="mt-5 overflow-hidden rounded-xl border border-slate-200">
+              <div className="bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-900">
+                Payroll Summary
+              </div>
+
+              {payrollSummary ? (
+                <div className="bg-white px-4 py-4">
+                  <div className="grid gap-4 md:grid-cols-4">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="text-xs font-semibold text-slate-600">
+                        Base Salary
+                      </div>
+                      <div className="mt-1 text-lg font-semibold text-slate-900">
+                        {payrollSummary.currency}{" "}
+                        {money(payrollSummary.baseSalary)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="text-xs font-semibold text-slate-600">
+                        Late Penalty
+                      </div>
+                      <div className="mt-1 text-lg font-semibold text-slate-900">
+                        {payrollSummary.currency}{" "}
+                        {money(payrollSummary.totalLatePenalty)}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        Late days: {payrollSummary.lateCount}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="text-xs font-semibold text-slate-600">
+                        SSNIT (
+                        {(Number(payrollSummary.ssnitRate) * 100).toFixed(1)}%)
+                      </div>
+                      <div className="mt-1 text-lg font-semibold text-slate-900">
+                        {payrollSummary.currency} {money(payrollSummary.ssnit)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="text-xs font-semibold text-slate-600">
+                        Welfare
+                      </div>
+                      <div className="mt-1 text-lg font-semibold text-slate-900">
+                        {payrollSummary.currency}{" "}
+                        {money(payrollSummary.welfare)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-slate-900">
+                        Other Deductions
+                      </div>
+                      <div className="text-sm font-semibold text-slate-900">
+                        {payrollSummary.currency}{" "}
+                        {money(payrollSummary.otherDeductionsTotal)}
+                      </div>
+                    </div>
+
+                    {/* Add deduction */}
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      <div className="md:col-span-2">
+                        <label className="text-xs font-semibold text-slate-600">
+                          Label
+                        </label>
+                        <input
+                          value={deductionLabel}
+                          onChange={(e) => setDeductionLabel(e.target.value)}
+                          placeholder="e.g. Loan repayment"
+                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold text-slate-600">
+                          Amount (GHS)
+                        </label>
+                        <input
+                          type="number"
+                          value={deductionAmount}
+                          onChange={(e) => setDeductionAmount(e.target.value)}
+                          placeholder="e.g. 50"
+                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid gap-2 md:grid-cols-2">
+                      <button
+                        disabled={payrollBusy}
+                        onClick={addOtherDeduction}
+                        className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                      >
+                        Add Deduction
+                      </button>
+
+                      <button
+                        disabled={
+                          payrollBusy || !payrollTeacherId || !payrollMonth
+                        }
+                        onClick={savePayrollDeductions}
+                        className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                      >
+                        {payrollBusy ? "Saving..." : "Save Deductions"}
+                      </button>
+                    </div>
+
+                    {/* Deductions list */}
+                    <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+                      <div className="grid grid-cols-3 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+                        <div>Label</div>
+                        <div className="text-right">Amount</div>
+                        <div className="text-right">Action</div>
+                      </div>
+
+                      {payrollOtherDeductions.length ? (
+                        payrollOtherDeductions.map((d) => (
+                          <div
+                            key={d.id}
+                            className="grid grid-cols-3 items-center border-t border-slate-200 px-4 py-3 text-sm"
+                          >
+                            <div className="truncate text-slate-700">
+                              {d.label}
+                            </div>
+                            <div className="text-right font-semibold text-slate-900">
+                              GHS {money(d.amount)}
+                            </div>
+                            <div className="text-right">
+                              <button
+                                disabled={payrollBusy}
+                                onClick={() => removeOtherDeduction(d.id)}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="px-4 py-4 text-sm text-slate-600">
+                          No other deductions for this month.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Totals */}
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="text-xs font-semibold text-slate-600">
+                        Total Deductions
+                      </div>
+                      <div className="mt-1 text-lg font-semibold text-slate-900">
+                        {payrollSummary.currency}{" "}
+                        {money(payrollSummary.totalDeductions)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-emerald-50 px-4 py-3">
+                      <div className="text-xs font-semibold text-emerald-700">
+                        Net Salary
+                      </div>
+                      <div className="mt-1 text-lg font-semibold text-emerald-900">
+                        {payrollSummary.currency}{" "}
+                        {money(payrollSummary.netSalary)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="mt-3 text-xs text-slate-500">
+                    Net Salary is clamped at 0 to avoid negative pay.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-white px-4 py-6 text-sm text-slate-600">
+                  Select a month and teacher, then click “Load Payroll”.
+                </div>
+              )}
             </div>
           </div>
-
-          <div className="rounded-xl border border-slate-200 bg-emerald-50 px-4 py-3">
-            <div className="text-xs font-semibold text-emerald-700">Net Salary</div>
-            <div className="mt-1 text-lg font-semibold text-emerald-900">
-              {payrollSummary.currency} {money(payrollSummary.netSalary)}
-            </div>
-          </div>
-        </div>
-
-        <p className="mt-3 text-xs text-slate-500">
-          Net Salary is clamped at 0 to avoid negative pay.
-        </p>
-      </div>
-    ) : (
-      <div className="bg-white px-4 py-6 text-sm text-slate-600">
-        Select a month and teacher, then click “Load Payroll”.
-      </div>
-    )}
-          </div>
-        </div>
         </div>
       </div>
 
@@ -4679,7 +5271,9 @@ async function confirmRejectOut() {
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <div>
-              <label className="text-xs font-semibold text-slate-600">Recipient</label>
+              <label className="text-xs font-semibold text-slate-600">
+                Recipient
+              </label>
               <select
                 value={notifRecipient}
                 onChange={(e) => setNotifRecipient(e.target.value)}
@@ -4695,7 +5289,9 @@ async function confirmRejectOut() {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-slate-600">Title</label>
+              <label className="text-xs font-semibold text-slate-600">
+                Title
+              </label>
               <input
                 value={notifTitle}
                 onChange={(e) => setNotifTitle(e.target.value)}
@@ -4706,7 +5302,9 @@ async function confirmRejectOut() {
           </div>
 
           <div className="mt-4">
-            <label className="text-xs font-semibold text-slate-600">Message</label>
+            <label className="text-xs font-semibold text-slate-600">
+              Message
+            </label>
             <textarea
               value={notifBody}
               onChange={(e) => setNotifBody(e.target.value)}
@@ -4722,7 +5320,10 @@ async function confirmRejectOut() {
               setNotifBusy(true);
               try {
                 if (notifRecipient === "ALL") {
-                  await sendBroadcastNotification({ title: notifTitle.trim(), body: notifBody.trim() });
+                  await sendBroadcastNotification({
+                    title: notifTitle.trim(),
+                    body: notifBody.trim(),
+                  });
                 } else {
                   await sendUserNotification({
                     recipientId: notifRecipient,
@@ -4752,7 +5353,9 @@ async function confirmRejectOut() {
         {/* Sent Notifications History */}
         <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900">Sent Notifications</h3>
+            <h3 className="text-sm font-bold text-slate-900">
+              Sent Notifications
+            </h3>
             <button
               onClick={async () => {
                 const all = await getAllNotifications(30);
@@ -4771,19 +5374,30 @@ async function confirmRejectOut() {
               </p>
             ) : (
               sentNotifications.map((n) => (
-                <div key={n.id} className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3">
+                <div
+                  key={n.id}
+                  className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3"
+                >
                   <div className="flex items-start justify-between gap-2">
-                    <div className="text-sm font-semibold text-slate-900">{n.title}</div>
-                    <span className={[
-                      "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold",
-                      n.recipientId === "ALL" ? "bg-pink-100 text-pink-700" : "bg-indigo-100 text-indigo-700",
-                    ].join(" ")}>
+                    <div className="text-sm font-semibold text-slate-900">
+                      {n.title}
+                    </div>
+                    <span
+                      className={[
+                        "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold",
+                        n.recipientId === "ALL"
+                          ? "bg-pink-100 text-pink-700"
+                          : "bg-indigo-100 text-indigo-700",
+                      ].join(" ")}
+                    >
                       {n.recipientId === "ALL" ? "Broadcast" : "Individual"}
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-slate-600">{n.body}</p>
                   <p className="mt-1 text-[10px] text-slate-400">
-                    {n.createdAt?.toDate ? n.createdAt.toDate().toLocaleString() : ""}
+                    {n.createdAt?.toDate
+                      ? n.createdAt.toDate().toLocaleString()
+                      : ""}
                   </p>
                 </div>
               ))
@@ -4797,18 +5411,30 @@ async function confirmRejectOut() {
             📱 SMS / WhatsApp Parent Alerts
           </h2>
           <p className="mt-1 text-xs text-slate-500">
-            When students are marked absent, this system can queue SMS or WhatsApp messages
-            to their parents. Add parent phone numbers when registering students (Classes tab).
-            Messages are queued in Firestore for your backend/Cloud Function to send via
-            Twilio, Africa&apos;s Talking, or Hubtel.
+            When students are marked absent, this system can queue SMS or
+            WhatsApp messages to their parents. Add parent phone numbers when
+            registering students (Classes tab). Messages are queued in Firestore
+            for your backend/Cloud Function to send via Twilio, Africa&apos;s
+            Talking, or Hubtel.
           </p>
 
           <div className="mt-4 rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm text-slate-700">
-            <p className="font-semibold text-emerald-800">Setup instructions:</p>
+            <p className="font-semibold text-emerald-800">
+              Setup instructions:
+            </p>
             <ol className="mt-2 list-inside list-decimal space-y-1 text-xs text-slate-600">
-              <li>Add parent phone numbers when creating students (Classes → Add Students)</li>
-              <li>Deploy a Cloud Function that watches <code>sms_queue</code> and sends via your SMS provider</li>
-              <li>Messages will be auto-queued when teachers submit absence attendance</li>
+              <li>
+                Add parent phone numbers when creating students (Classes → Add
+                Students)
+              </li>
+              <li>
+                Deploy a Cloud Function that watches <code>sms_queue</code> and
+                sends via your SMS provider
+              </li>
+              <li>
+                Messages will be auto-queued when teachers submit absence
+                attendance
+              </li>
             </ol>
           </div>
         </div>
@@ -4849,7 +5475,9 @@ async function confirmRejectOut() {
 
           {/* Filter */}
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold text-slate-600">Filter:</span>
+            <span className="text-xs font-semibold text-slate-600">
+              Filter:
+            </span>
             {["ALL", ...Object.values(AUDIT_ACTIONS)].map((a) => (
               <button
                 key={a}
@@ -4874,35 +5502,55 @@ async function confirmRejectOut() {
               </p>
             ) : (
               auditEntries
-                .filter((e) => auditFilter === "ALL" || e.action === auditFilter)
+                .filter(
+                  (e) => auditFilter === "ALL" || e.action === auditFilter,
+                )
                 .map((entry) => {
                   const actionColors = {
-                    CHECKIN_APPROVED: "bg-emerald-100 text-emerald-800 border-emerald-300",
-                    CHECKIN_REJECTED: "bg-rose-100 text-rose-800 border-rose-300",
+                    CHECKIN_APPROVED:
+                      "bg-emerald-100 text-emerald-800 border-emerald-300",
+                    CHECKIN_REJECTED:
+                      "bg-rose-100 text-rose-800 border-rose-300",
                     TEACHER_BLOCKED: "bg-red-100 text-red-800 border-red-300",
-                    TEACHER_UNBLOCKED: "bg-green-100 text-green-800 border-green-300",
+                    TEACHER_UNBLOCKED:
+                      "bg-green-100 text-green-800 border-green-300",
                     LEAVE_APPROVED: "bg-teal-100 text-teal-800 border-teal-300",
-                    LEAVE_REJECTED: "bg-orange-100 text-orange-800 border-orange-300",
-                    NOTIFICATION_SENT: "bg-pink-100 text-pink-800 border-pink-300",
+                    LEAVE_REJECTED:
+                      "bg-orange-100 text-orange-800 border-orange-300",
+                    NOTIFICATION_SENT:
+                      "bg-pink-100 text-pink-800 border-pink-300",
                     CLASS_CREATED: "bg-blue-100 text-blue-800 border-blue-300",
                     CLASS_DELETED: "bg-rose-100 text-rose-800 border-rose-300",
                     STUDENT_ADDED: "bg-sky-100 text-sky-800 border-sky-300",
-                    STUDENT_DELETED: "bg-amber-100 text-amber-800 border-amber-300",
-                    TEACHER_CREATED: "bg-indigo-100 text-indigo-800 border-indigo-300",
-                    FEE_RECEIPT_ADDED: "bg-yellow-100 text-yellow-800 border-yellow-300",
-                    PAYROLL_GENERATED: "bg-purple-100 text-purple-800 border-purple-300",
+                    STUDENT_DELETED:
+                      "bg-amber-100 text-amber-800 border-amber-300",
+                    TEACHER_CREATED:
+                      "bg-indigo-100 text-indigo-800 border-indigo-300",
+                    FEE_RECEIPT_ADDED:
+                      "bg-yellow-100 text-yellow-800 border-yellow-300",
+                    PAYROLL_GENERATED:
+                      "bg-purple-100 text-purple-800 border-purple-300",
                   };
-                  const color = actionColors[entry.action] || "bg-slate-100 text-slate-700 border-slate-200";
+                  const color =
+                    actionColors[entry.action] ||
+                    "bg-slate-100 text-slate-700 border-slate-200";
                   return (
-                    <div key={entry.id} className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <div
+                      key={entry.id}
+                      className="rounded-xl border border-slate-200 bg-white px-4 py-3"
+                    >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold ${color}`}>
+                            <span
+                              className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold ${color}`}
+                            >
                               {(entry.action || "").replace(/_/g, " ")}
                             </span>
                             <span className="text-xs font-semibold text-slate-800">
-                              {entry.actorName || entry.actorId?.slice(0, 8) || "System"}
+                              {entry.actorName ||
+                                entry.actorId?.slice(0, 8) ||
+                                "System"}
                             </span>
                             {entry.targetName ? (
                               <span className="text-xs text-slate-500">
@@ -4911,7 +5559,9 @@ async function confirmRejectOut() {
                             ) : null}
                           </div>
                           {entry.details ? (
-                            <p className="mt-1 text-xs text-slate-600">{entry.details}</p>
+                            <p className="mt-1 text-xs text-slate-600">
+                              {entry.details}
+                            </p>
                           ) : null}
                         </div>
                         <div className="shrink-0 text-[10px] text-slate-400 text-right">
@@ -4925,11 +5575,13 @@ async function confirmRejectOut() {
                 })
             )}
             {auditEntries.length > 0 &&
-              auditEntries.filter((e) => auditFilter === "ALL" || e.action === auditFilter).length === 0 && (
-              <p className="py-8 text-center text-sm text-slate-400">
-                No entries match the selected filter.
-              </p>
-            )}
+              auditEntries.filter(
+                (e) => auditFilter === "ALL" || e.action === auditFilter,
+              ).length === 0 && (
+                <p className="py-8 text-center text-sm text-slate-400">
+                  No entries match the selected filter.
+                </p>
+              )}
           </div>
         </div>
       </div>
@@ -4940,6 +5592,261 @@ async function confirmRejectOut() {
       <div className={activeTab !== "assessment" ? "hidden" : ""}>
         <TeacherWeeklyAssessment profile={profile} user={user} />
       </div>
+
+      {/* ═══════════════════════════════════════════════════════
+          TAB: Exam Papers Review
+      ═══════════════════════════════════════════════════════ */}
+      <div className={activeTab !== "exams" ? "hidden" : ""}>
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">📚 Exam Papers Review</h2>
+              <p className="text-sm text-slate-500">Review, approve, or request corrections on teacher-submitted exam papers.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {["ALL", "SUBMITTED", "APPROVED", "REJECTED", "NEEDS_CORRECTION", "DRAFT"].map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setAdminExamFilter(f)}
+                  className={[
+                    "rounded-lg px-3 py-1.5 text-xs font-semibold transition",
+                    adminExamFilter === f
+                      ? "bg-fuchsia-600 text-white shadow"
+                      : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                  ].join(" ")}
+                >
+                  {f.replace(/_/g, " ")}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Exam preview modal */}
+          {adminExamPreview && (
+            <div className="rounded-2xl border border-fuchsia-200 bg-white p-6 shadow-lg">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-bold text-slate-900">Reviewing: {adminExamPreview.subject} – {adminExamPreview.className}</h3>
+                <button onClick={() => { setAdminExamPreview(null); setAdminExamComment(""); }} className="text-xs text-slate-500 hover:underline">✕ Close</button>
+              </div>
+              <ExamPreview exam={adminExamPreview} />
+
+              <div className="mt-6 border-t border-slate-200 pt-4">
+                <label className="text-sm font-medium text-slate-700">Admin Comment (optional)</label>
+                <textarea
+                  value={adminExamComment}
+                  onChange={(e) => setAdminExamComment(e.target.value)}
+                  rows={3}
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-fuchsia-400"
+                  placeholder="Leave feedback for the teacher..."
+                />
+                <div className="mt-3 flex flex-wrap gap-3">
+                  <button
+                    disabled={examReviewBusy}
+                    onClick={() => handleExamAction(adminExamPreview.id, "approve")}
+                    className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-emerald-700 disabled:opacity-50 transition"
+                  >
+                    ✅ Approve
+                  </button>
+                  <button
+                    disabled={examReviewBusy}
+                    onClick={() => handleExamAction(adminExamPreview.id, "correction")}
+                    className="rounded-xl bg-orange-500 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-orange-600 disabled:opacity-50 transition"
+                  >
+                    ✏️ Request Correction
+                  </button>
+                  <button
+                    disabled={examReviewBusy}
+                    onClick={() => handleExamAction(adminExamPreview.id, "reject")}
+                    className="rounded-xl bg-red-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-red-700 disabled:opacity-50 transition"
+                  >
+                    ❌ Reject
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Exams grid */}
+          {filteredAdminExams.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
+              <p className="text-3xl">📭</p>
+              <p className="mt-2 text-sm font-semibold text-slate-700">No exams found</p>
+              <p className="text-xs text-slate-500">Try changing the filter above.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {filteredAdminExams.map((exam) => {
+                const statusColors = {
+                  DRAFT: "bg-slate-100 text-slate-700 border-slate-200",
+                  SUBMITTED: "bg-amber-50 text-amber-700 border-amber-200",
+                  UNDER_REVIEW: "bg-sky-50 text-sky-700 border-sky-200",
+                  APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
+                  REJECTED: "bg-red-50 text-red-700 border-red-200",
+                  NEEDS_CORRECTION: "bg-orange-50 text-orange-700 border-orange-200",
+                };
+                return (
+                  <div key={exam.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm hover:shadow-md transition">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900">{exam.subject}</h3>
+                        <p className="text-xs text-slate-500">{exam.className} · {exam.examType} · Term {exam.term}</p>
+                        <p className="text-xs text-slate-400">By: {exam.teacherName}</p>
+                      </div>
+                      <span className={`rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${statusColors[exam.status] || statusColors.DRAFT}`}>
+                        {exam.status?.replace(/_/g, " ")}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+                      <span>{exam.inputMode === "upload" ? "📎 File" : "✏️ Typed"}</span>
+                      <span>·</span>
+                      <span>{exam.levelGroup === "PRESCHOOL" ? "Preschool" : "Basic"}</span>
+                      {exam.createdAt?.toDate && (
+                        <><span>·</span><span>{exam.createdAt.toDate().toLocaleDateString()}</span></>
+                      )}
+                    </div>
+                    {exam.adminComment && (
+                      <div className="mt-2 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-600">
+                        <span className="font-semibold">Admin:</span> {exam.adminComment}
+                      </div>
+                    )}
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        onClick={() => { setAdminExamPreview(exam); setAdminExamComment(""); }}
+                        className="rounded-lg border border-fuchsia-200 bg-fuchsia-50 px-3 py-1.5 text-xs font-semibold text-fuchsia-700 hover:bg-fuchsia-100"
+                      >
+                        👁️ Review
+                      </button>
+                      {exam.fileUrl && (
+                        <a href={exam.fileUrl} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-100">
+                          ⬇️ Download
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ═══ TAB: Users & Roles ═══ */}
+      <div className={activeTab !== "userroles" ? "hidden" : ""}>
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <h2 className="text-lg font-bold text-slate-900">👥 Users & Roles</h2>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="Search by name or email…"
+                value={rolesSearch}
+                onChange={(e) => setRolesSearch(e.target.value)}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring"
+              />
+              <button
+                disabled={rolesLoading}
+                onClick={async () => {
+                  setRolesLoading(true);
+                  try {
+                    const users = await getAllUsers();
+                    setAllUsers(users);
+                  } catch (e) {
+                    toast.error(e.message || "Failed to load users");
+                  } finally {
+                    setRolesLoading(false);
+                  }
+                }}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+              >
+                {rolesLoading ? "Loading…" : allUsers.length ? "↻ Refresh" : "Load Users"}
+              </button>
+            </div>
+          </div>
+
+          <p className="mb-4 text-xs text-slate-500">
+            Toggle roles for each user. Changes are saved immediately. A user with multiple roles can switch between dashboards.
+          </p>
+
+          {allUsers.length === 0 && !rolesLoading && (
+            <p className="text-sm text-slate-500 py-6 text-center">Click "Load Users" to see all users.</p>
+          )}
+
+          {allUsers.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    <th className="py-3 pr-3">Name / Email</th>
+                    <th className="py-3 px-2 text-center">Admin</th>
+                    <th className="py-3 px-2 text-center">Teacher</th>
+                    <th className="py-3 px-2 text-center">Accounts</th>
+                    <th className="py-3 px-2 text-center">Staff</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allUsers
+                    .filter((u) => {
+                      if (!rolesSearch.trim()) return true;
+                      const q = rolesSearch.toLowerCase();
+                      return (u.fullName || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q);
+                    })
+                    .map((u) => {
+                      const userRoles = Array.isArray(u.roles) && u.roles.length > 0 ? u.roles : u.role ? [u.role] : ["TEACHER"];
+                      return (
+                        <tr key={u.uid} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="py-3 pr-3">
+                            <div className="font-medium text-slate-900">{u.fullName || "—"}</div>
+                            <div className="text-xs text-slate-500">{u.email}</div>
+                          </td>
+                          {["ADMIN", "TEACHER", "ACCOUNTS", "NON_TEACHER"].map((r) => (
+                            <td key={r} className="py-3 px-2 text-center">
+                              <button
+                                onClick={async () => {
+                                  const has = userRoles.includes(r);
+                                  let next;
+                                  if (has) {
+                                    next = userRoles.filter((x) => x !== r);
+                                    if (next.length === 0) {
+                                      toast.error("A user must have at least one role.");
+                                      return;
+                                    }
+                                  } else {
+                                    next = [...userRoles, r];
+                                  }
+                                  try {
+                                    await updateUserRoles(u.uid, next);
+                                    setAllUsers((prev) =>
+                                      prev.map((x) => (x.uid === u.uid ? { ...x, roles: next, role: next[0] } : x))
+                                    );
+                                    toast.success(`Roles updated for ${u.fullName || u.email}`);
+                                  } catch (e) {
+                                    toast.error(e.message || "Failed to update roles");
+                                  }
+                                }}
+                                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
+                                  userRoles.includes(r) ? "bg-emerald-500" : "bg-slate-200"
+                                }`}
+                                role="switch"
+                                aria-checked={userRoles.includes(r)}
+                              >
+                                <span
+                                  className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                    userRoles.includes(r) ? "translate-x-5" : "translate-x-0"
+                                  }`}
+                                />
+                              </button>
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
     </div>
   );
 }

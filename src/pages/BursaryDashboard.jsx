@@ -20,8 +20,9 @@ import {
 } from "../services/bursaryService";
 import { useLanguage } from "../i18n/useLanguage";
 import LanguageSwitcher from "../i18n/LanguageSwitcher";
+import RoleSwitcher from "../components/RoleSwitcher";
 
-export default function BursaryDashboard({ profile }) {
+export default function BursaryDashboard({ profile, roles, activeRole, switchRole }) {
   const user = auth.currentUser;
   const { t } = useLanguage();
 
@@ -290,6 +291,7 @@ export default function BursaryDashboard({ profile }) {
               <p className="mt-1 text-sm text-white/80">{profile?.fullName || user?.email}</p>
             </div>
             <div className="flex items-center gap-3">
+              <RoleSwitcher roles={roles} activeRole={activeRole} onSwitch={switchRole} />
               <LanguageSwitcher />
               <button
                 onClick={() => signOut(auth)}

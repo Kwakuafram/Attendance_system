@@ -120,3 +120,27 @@ export async function getStudentsByClass(classId) {
 export async function deleteStudent(studentId) {
   await deleteDoc(doc(db, "students", studentId));
 }
+
+// ─── Multi-role helpers ─────────────────────────────────
+
+const VALID_ROLES = ["ADMIN", "TEACHER", "ACCOUNTS", "NON_TEACHER"];
+
+/** Get all users (for role management) */
+export async function getAllUsers() {
+  const snap = await getDocs(collection(db, "users"));
+  return snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
+}
+
+/** Update the roles array for a user. Also keeps legacy `role` field in sync (first role). */
+export async function updateUserRoles(uid, roles) {
+  if (!Array.isArray(roles) || roles.length === 0) throw new Error("At least one role is required.");
+  const invalid = roles.filter((r) => !VALID_ROLES.includes(r));
+  if (invalid.length) throw new Error(`Invalid role(s): ${invalid.join(", ")}`);
+
+  const ref = doc(db, "users", uid);
+  await updateDoc(ref, {
+    roles,
+    role: roles[0], // keep legacy field in sync
+    updatedAt: serverTimestamp(),
+  });
+}

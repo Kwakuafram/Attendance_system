@@ -94,6 +94,12 @@ export async function requestCheckIn(uid, inputCode) {
   const nowMins = accraMinutesFromDate(now);
   const expired = nowMins > Number(school.codeExpiresMinutes ?? 380);
 
+  // Auto-approve: compute lateness inline
+  const lateAfterMinutes = school.lateAfterMinutes ?? 375; // 06:15
+  const penaltyPerLate = school.penaltyPerLate ?? 5;
+  const isLate = nowMins > lateAfterMinutes;
+  const latePenalty = isLate ? penaltyPerLate : 0;
+
   const date = accraYyyyMmDd();
   const id = attendanceDocId(uid, date);
   const ref = doc(db, "attendance", id);
@@ -108,15 +114,15 @@ export async function requestCheckIn(uid, inputCode) {
       monthKey: accraMonthKey(),
       monthName: accraMonthName(),
 
-      // Check-in fields
+      // Check-in fields (auto-approved)
       checkInRequestedAt: serverTimestamp(),
       checkInCodeUsed: String(inputCode).trim(),
-      checkInApprovedAt: null,
-      checkInApprovedBy: null,
+      checkInApprovedAt: serverTimestamp(),
+      checkInApprovedBy: "AUTO",
 
       // Late logic
-      isLate: null,
-      latePenalty: null,
+      isLate,
+      latePenalty,
       codeExpiredAtRequest: !!expired,
 
       // Rejection (check-in)
@@ -132,10 +138,10 @@ export async function requestCheckIn(uid, inputCode) {
       checkOutRejectedBy: null,
       checkOutRejectionReason: null,
 
-      // Work duration (computed on checkout approval)
+      // Work duration (computed on checkout)
       minutesWorked: null,
 
-      status: "PENDING_IN",
+      status: "IN_APPROVED",
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -145,22 +151,20 @@ export async function requestCheckIn(uid, inputCode) {
 
   const data = snap.data();
 
-  // If already requested and not rejected, do nothing (prevents duplicates).
-  // Allow re-request ONLY if admin previously rejected.
+  // If already checked in and not rejected, do nothing (prevents duplicates).
   if (data.checkInRequestedAt && data.status !== "REJECTED") return;
 
   await updateDoc(ref, {
-    // Re-request check-in
+    // Re-request check-in (auto-approved)
     checkInRequestedAt: serverTimestamp(),
     checkInCodeUsed: String(inputCode).trim(),
-    status: "PENDING_IN",
+    checkInApprovedAt: serverTimestamp(),
+    checkInApprovedBy: "AUTO",
+    isLate,
+    latePenalty,
+    status: "IN_APPROVED",
     codeExpiredAtRequest: !!expired,
 
-    // Reset check-in admin decision fields when re-requesting
-    checkInApprovedAt: null,
-    checkInApprovedBy: null,
-    isLate: null,
-    latePenalty: null,
     rejectedAt: null,
     rejectedBy: null,
     rejectionReason: null,
@@ -289,20 +293,21 @@ if (!after3pm) throw new Error("Checkout opens after 3:00pm GMT.");
   // Prevent duplicate requests unless previously rejected
   if (data.checkOutRequestedAt && data.status !== "REJECTED_OUT") return;
 
+  // Auto-approve checkout: compute minutes worked from check-in approval
+  const checkInApprovedDate = data.checkInApprovedAt?.toDate?.();
+  const minutesWorked = checkInApprovedDate
+    ? Math.max(0, Math.round((now.getTime() - checkInApprovedDate.getTime()) / (1000 * 60)))
+    : null;
+
   await updateDoc(ref, {
     checkOutRequestedAt: serverTimestamp(),
-
-    // reset out decision fields
-    checkOutApprovedAt: null,
-    checkOutApprovedBy: null,
+    checkOutApprovedAt: serverTimestamp(),
+    checkOutApprovedBy: "AUTO",
     checkOutRejectedAt: null,
     checkOutRejectedBy: null,
     checkOutRejectionReason: null,
-
-    // do not overwrite minutesWorked unless approved later
-    minutesWorked: null,
-
-    status: "PENDING_OUT",
+    minutesWorked,
+    status: "OUT_APPROVED",
     updatedAt: serverTimestamp(),
   });
 }

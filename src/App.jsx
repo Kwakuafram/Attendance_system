@@ -15,22 +15,26 @@ function dismissSplash() {
 }
 
 export default function App() {
-  const { user, initializing, profile } = useAuth();
+  const { user, initializing, profile, roles, activeRole, switchRole } = useAuth();
 
   // Dismiss splash once auth is resolved
   useEffect(() => {
     if (!initializing) dismissSplash();
   }, [initializing]);
 
-  return initializing ? null : !user ? (
-    <AuthPage />
-  ) : profile?.role === "ADMIN" ? (
-    <AdminDashboard profile={profile} />
-  ) : profile?.role === "TEACHER" ? (
-    <TeacherDashboard profile={profile} />
-  ) : profile?.role === "ACCOUNTS" ? (
-    <BursaryDashboard profile={profile} />
-  ) : (
-    <NonTeacherDashboard profile={profile} />
-  );
+  if (initializing) return null;
+  if (!user) return <AuthPage />;
+
+  const roleProps = { profile, roles, activeRole, switchRole };
+
+  switch (activeRole) {
+    case "ADMIN":
+      return <AdminDashboard {...roleProps} />;
+    case "TEACHER":
+      return <TeacherDashboard {...roleProps} />;
+    case "ACCOUNTS":
+      return <BursaryDashboard {...roleProps} />;
+    default:
+      return <NonTeacherDashboard {...roleProps} />;
+  }
 }

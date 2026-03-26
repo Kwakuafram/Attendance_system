@@ -25,8 +25,9 @@ import {
 } from "../services/notificationService";
 import { useLanguage } from "../i18n/useLanguage";
 import LanguageSwitcher from "../i18n/LanguageSwitcher";
+import RoleSwitcher from "../components/RoleSwitcher";
 
-export default function NonTeacherDashboard() {
+export default function NonTeacherDashboard({ roles, activeRole, switchRole }) {
   const { t } = useLanguage();
   const [user, setUser] = useState(null);
   const [today, setToday] = useState(null);
@@ -262,6 +263,7 @@ export default function NonTeacherDashboard() {
               </p>
             </div>
             <div className="flex items-center gap-3">
+              <RoleSwitcher roles={roles} activeRole={activeRole} onSwitch={switchRole} />
               <LanguageSwitcher />
               <button
                 onClick={async () => {

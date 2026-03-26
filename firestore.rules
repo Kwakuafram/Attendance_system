@@ -130,14 +130,11 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.resource.data.teacherId == request.auth.uid;
 
+      // Teachers can update their own attendance (auto-approve flow)
       allow update: if isAdmin()
         || (
           signedIn()
           && resource.data.teacherId == request.auth.uid
-          && request.resource.data.checkInApprovedAt == resource.data.checkInApprovedAt
-          && request.resource.data.checkInApprovedBy == resource.data.checkInApprovedBy
-          && request.resource.data.isLate == resource.data.isLate
-          && request.resource.data.latePenalty == resource.data.latePenalty
         );
 
       allow delete: if false;
@@ -305,9 +302,10 @@ match /trial_test_positions/{docId} {
     // Absence Reasons (teacher blocked / missed attendance)
     // =========================================================
     match /absence_reasons/{docId} {
-      // Admin can read all; teachers can read their own
+      // Admin can read all; teachers can read their own (resource==null when doc doesn't exist)
       allow get: if signedIn() && (
         isAdmin() ||
+        resource == null ||
         resource.data.teacherId == request.auth.uid
       );
       allow list: if isAdmin() || (
@@ -419,6 +417,37 @@ match /trial_test_positions/{docId} {
       );
 
       allow delete: if isAdmin();
+    }
+
+    // =========================================================
+    // Exam Papers (teacher create/edit, admin review)
+    // =========================================================
+    match /exams/{examId} {
+      // Admin can read all; teachers can read their own
+      allow get: if signedIn() && (
+        isAdmin() ||
+        resource.data.teacherId == request.auth.uid
+      );
+      allow list: if signedIn();
+
+      // Teachers create their own exams
+      allow create: if signedIn()
+        && request.resource.data.teacherId == request.auth.uid;
+
+      // Teachers can update their own if DRAFT or NEEDS_CORRECTION;
+      // Admin can update any (for review actions)
+      allow update: if isAdmin() || (
+        signedIn()
+        && resource.data.teacherId == request.auth.uid
+        && (resource.data.status == "DRAFT" || resource.data.status == "NEEDS_CORRECTION")
+      );
+
+      // Teachers can delete their own drafts; admin can delete any
+      allow delete: if isAdmin() || (
+        signedIn()
+        && resource.data.teacherId == request.auth.uid
+        && resource.data.status == "DRAFT"
+      );
     }
 
   }
