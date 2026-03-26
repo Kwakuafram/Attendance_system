@@ -47,6 +47,8 @@ import {
   checkMissedAttendance,
   submitAbsenceReason,
   blockTeacher,
+  checkMissedClassAttendance,
+  submitClassAttendanceReason,
 } from "../services/absenceReasonService";
 import {
   LEAVE_TYPES,
@@ -141,6 +143,12 @@ const [bankMsg, setBankMsg] = useState("");
   const [absenceReason, setAbsenceReason] = useState("");
   const [absenceBusy, setAbsenceBusy] = useState(false);
   const [absenceMsg, setAbsenceMsg] = useState("");
+
+  // Missed Class Attendance
+  const [missedClassInfo, setMissedClassInfo] = useState(null);
+  const [classAbsenceReason, setClassAbsenceReason] = useState("");
+  const [classAbsenceBusy, setClassAbsenceBusy] = useState(false);
+  const [classAbsenceMsg, setClassAbsenceMsg] = useState("");
 
   // ============================
   // Notifications
@@ -733,6 +741,16 @@ function fmtTime(ts) {
           console.error("Error checking missed attendance:", e);
         }
 
+        // Check if teacher missed class attendance submission yesterday
+        try {
+          const missedClass = await checkMissedClassAttendance(u.uid);
+          if (missedClass.missed) {
+            setMissedClassInfo(missedClass);
+          }
+        } catch (e) {
+          console.error("Error checking missed class attendance:", e);
+        }
+
         const t = await getTodayAttendance(u.uid);
         setToday(t.data);
 
@@ -811,6 +829,18 @@ function fmtTime(ts) {
       }
     } catch (e) {
       console.error("Error checking missed attendance:", e);
+    }
+
+    // Check if teacher missed class attendance submission yesterday
+    try {
+      const missedClass = await checkMissedClassAttendance(user.uid);
+      if (missedClass.missed) {
+        setMissedClassInfo(missedClass);
+      } else {
+        setMissedClassInfo(null);
+      }
+    } catch (e) {
+      console.error("Error checking missed class attendance:", e);
     }
 
     const t = await getTodayAttendance(user.uid);
@@ -926,7 +956,15 @@ async function handleRequestCheckout() {
         reason: absenceReason,
         missedType: missedInfo.missedType,
       });
-      setAbsenceMsg("Reason submitted. Thank you.");
+      // Block teacher even after reason — admin must unblock
+      await blockTeacher(
+        user.uid,
+        `Missed ${missedInfo.missedType === "NO_CHECKIN" ? "check-in" : "check-out"} on ${missedInfo.missedDate}. Reason: ${absenceReason.trim()}`
+      );
+      setIsBlocked(true);
+      setBlockedReason(
+        `Your account has been blocked for missed attendance on ${missedInfo.missedDate}. Your reason has been recorded. Please contact the admin to get unblocked.`
+      );
       setMissedInfo(null);
       setAbsenceReason("");
     } catch (e) {
@@ -950,6 +988,60 @@ async function handleRequestCheckout() {
       setAbsenceMsg(e?.message || "Error.");
     } finally {
       setAbsenceBusy(false);
+    }
+  }
+
+  // ============================
+  // Missed CLASS attendance handlers
+  // ============================
+  async function handleSubmitClassAbsenceReason() {
+    setClassAbsenceMsg("");
+    if (!user?.uid || !missedClassInfo) return;
+
+    setClassAbsenceBusy(true);
+    try {
+      await submitClassAttendanceReason(user.uid, {
+        date: missedClassInfo.missedDate,
+        reason: classAbsenceReason,
+        classId: missedClassInfo.classId,
+        className: missedClassInfo.className,
+      });
+      // Block teacher even after reason — admin must unblock
+      await blockTeacher(
+        user.uid,
+        `Did not submit student attendance for ${missedClassInfo.className} on ${missedClassInfo.missedDate}. Reason: ${classAbsenceReason.trim()}`
+      );
+      setIsBlocked(true);
+      setBlockedReason(
+        `Your account has been blocked for not submitting student attendance for ${missedClassInfo.className} on ${missedClassInfo.missedDate}. Your reason has been recorded. Please contact the admin to get unblocked.`
+      );
+      setMissedClassInfo(null);
+      setClassAbsenceReason("");
+    } catch (e) {
+      setClassAbsenceMsg(e?.message || "Failed to submit reason.");
+    } finally {
+      setClassAbsenceBusy(false);
+    }
+  }
+
+  async function handleDismissClassAbsenceWarning() {
+    if (!user?.uid || !missedClassInfo) return;
+
+    setClassAbsenceBusy(true);
+    try {
+      await blockTeacher(
+        user.uid,
+        `No reason provided for not submitting student attendance for ${missedClassInfo.className} on ${missedClassInfo.missedDate}`
+      );
+      setIsBlocked(true);
+      setBlockedReason(
+        `You were blocked for not submitting student attendance for ${missedClassInfo.className} on ${missedClassInfo.missedDate}. Contact admin to unblock.`
+      );
+      setMissedClassInfo(null);
+    } catch (e) {
+      setClassAbsenceMsg(e?.message || "Error.");
+    } finally {
+      setClassAbsenceBusy(false);
     }
   }
 
@@ -1075,7 +1167,7 @@ async function handleRequestCheckout() {
             </div>
 
             <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-xs text-amber-800">
-              <strong>Warning:</strong> If you dismiss this without providing a reason, your account will be <strong>blocked</strong> and you will need to contact the admin to unblock it.
+              <strong>Notice:</strong> After submitting your reason, your account will be <strong>temporarily blocked</strong> until the admin reviews and unblocks you.
             </div>
 
             {absenceMsg ? (
@@ -1098,20 +1190,70 @@ async function handleRequestCheckout() {
               />
             </div>
 
-            <div className="mt-5 flex gap-3">
+            <div className="mt-5">
               <button
                 disabled={absenceBusy || !absenceReason.trim()}
                 onClick={handleSubmitAbsenceReason}
-                className="flex-1 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
               >
                 {absenceBusy ? "Submitting..." : "Submit Reason"}
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ========== MISSED CLASS ATTENDANCE MODAL ========== */}
+      {missedClassInfo && !isBlocked && !missedInfo ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-rose-100">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-rose-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">
+                  Student Attendance Not Submitted
+                </h3>
+                <p className="text-sm text-slate-600">
+                  You did not submit student attendance for <strong>{missedClassInfo.className}</strong> on <strong>{missedClassInfo.missedDate}</strong>.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl bg-rose-50 border border-rose-200 px-4 py-3 text-xs text-rose-800">
+              <strong>Notice:</strong> After submitting your reason, your account will be <strong>temporarily blocked</strong> until the admin reviews and unblocks you.
+            </div>
+
+            {classAbsenceMsg ? (
+              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                {classAbsenceMsg}
+              </div>
+            ) : null}
+
+            <div className="mt-4">
+              <label className="text-xs font-semibold text-slate-600">
+                Reason for not submitting student attendance
+              </label>
+              <textarea
+                value={classAbsenceReason}
+                onChange={(e) => setClassAbsenceReason(e.target.value)}
+                rows={4}
+                disabled={classAbsenceBusy}
+                placeholder="Explain why you didn't submit student attendance (e.g. was absent, no students present, emergency)..."
+                className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring disabled:bg-slate-50 disabled:text-slate-400"
+              />
+            </div>
+
+            <div className="mt-5">
               <button
-                disabled={absenceBusy}
-                onClick={handleDismissAbsenceWarning}
-                className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+                disabled={classAbsenceBusy || !classAbsenceReason.trim()}
+                onClick={handleSubmitClassAbsenceReason}
+                className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
               >
-                {absenceBusy ? "..." : "Dismiss (will block)"}
+                {classAbsenceBusy ? "Submitting..." : "Submit Reason"}
               </button>
             </div>
           </div>

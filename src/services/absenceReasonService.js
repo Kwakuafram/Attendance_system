@@ -222,3 +222,81 @@ export async function getAllRecentAbsenceReasons(maxRows = 50) {
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
+
+// ─── Check if teacher missed student class attendance yesterday ────────────
+
+/**
+ * Returns { missed: true/false, missedDate, classId, className }
+ *
+ * A teacher "missed class attendance" if:
+ *  - They have an assigned class
+ *  - No attendance_sessions doc exists (or status != SUBMITTED) for their class
+ *    on the previous workday
+ *  - They haven't already submitted a reason for it
+ */
+export async function checkMissedClassAttendance(uid) {
+  const today = accraYyyyMmDd();
+
+  if (!isSchoolDay(today)) {
+    return { missed: false };
+  }
+
+  const prevDay = getPreviousWorkday(today);
+
+  // Find teacher's assigned class
+  const classQ = query(collection(db, "classes"), where("teacherUid", "==", uid));
+  const classSnap = await getDocs(classQ);
+  if (classSnap.empty) {
+    return { missed: false }; // no class assigned, nothing to check
+  }
+
+  const cls = classSnap.docs[0];
+  const classId = cls.id;
+  const className = cls.data().name || classId;
+
+  // Check if reason was already submitted for this
+  const reasonId = `classatt_${uid}_${prevDay}`;
+  const reasonSnap = await getDoc(doc(db, "absence_reasons", reasonId));
+  if (reasonSnap.exists()) {
+    return { missed: false, reasonAlreadySubmitted: true };
+  }
+
+  // Check if attendance session exists and was submitted
+  const sessionId = `${classId}_${prevDay}`;
+  const sessionRef = doc(db, "attendance_sessions", sessionId);
+  const sessionSnap = await getDoc(sessionRef);
+
+  if (!sessionSnap.exists()) {
+    return { missed: true, missedDate: prevDay, classId, className };
+  }
+
+  const status = sessionSnap.data().status || "";
+  if (status !== "SUBMITTED") {
+    return { missed: true, missedDate: prevDay, classId, className };
+  }
+
+  return { missed: false };
+}
+
+/**
+ * Submit a reason for missing class attendance submission.
+ */
+export async function submitClassAttendanceReason(uid, { date, reason, classId, className }) {
+  const cleanReason = String(reason || "").trim();
+  if (!cleanReason) throw new Error("Reason is required.");
+  if (cleanReason.length < 5) throw new Error("Please provide a more detailed reason (at least 5 characters).");
+
+  const docId = `classatt_${uid}_${date}`;
+  const ref = doc(db, "absence_reasons", docId);
+
+  await setDoc(ref, {
+    teacherId: uid,
+    date,
+    missedType: "NO_CLASS_ATTENDANCE",
+    classId: classId || "",
+    className: className || "",
+    reason: cleanReason,
+    submittedAt: serverTimestamp(),
+    createdAt: serverTimestamp(),
+  });
+}
